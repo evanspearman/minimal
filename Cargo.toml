@@ -24,6 +24,7 @@ members = [
     "crates/minimald-rpc",
     "crates/minvmd",
     "crates/mlog",
+    "crates/onboarding",
     "crates/remote-client",
     "crates/remote-proto",
     "crates/sandbox2",

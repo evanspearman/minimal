@@ -13,7 +13,7 @@ graph → sandboxed builds → content-addressed cache) and the **session plane*
 (long-lived isolated dev environments, natively on Linux or inside a libkrun
 microVM). Start with [docs/architecture.md](docs/architecture.md).
 
-Four binaries come out of this workspace:
+Four binaries ship from this workspace:
 
 | Binary | Role | Reference |
 |---|---|---|
@@ -26,7 +26,7 @@ The CLI reference overview is [docs/reference/cli.md](docs/reference/cli.md).
 
 ## Crate map
 
-31 crates. One line each; the long-form map with plane assignments is in
+32 crates. One line each; the long-form map with plane assignments is in
 [docs/architecture.md](docs/architecture.md) §3.
 
 | Crate | Role |
@@ -50,6 +50,7 @@ The CLI reference overview is [docs/reference/cli.md](docs/reference/cli.md).
 | `minvmd` | Host daemon that boots Linux microVMs via libkrun and bridges host UDS to in-VM vsock. |
 | `mip` | The Minimal package/build CLI. |
 | `mlog` | JSON file-log layer both `minimald` and `minvmd` write through; one definition of the on-disk log format. |
+| `onboarding` | The `onboarding` binary: a ratatui loadout picker over the embedded portraits. Not shipped. |
 | `op` | Complex operations over the graph and packages (builds, cache object construction). |
 | `orchestrator` | Runtime orchestration of builds behind a pluggable `Backend`. |
 | `ot` | Operation tracking for progress rendering (render-agnostic core + drivers). |

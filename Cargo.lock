@@ -4704,6 +4704,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "onboarding"
+version = "0.5.0-rc1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "ratatui",
+ "version",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

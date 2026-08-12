@@ -1,0 +1,17 @@
+[package]
+name = "onboarding"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+# Terminal dimensions for `show`, and the picker's key events. ratatui
+# re-exports crossterm, but the dependency is direct because this crate drives
+# the event loop itself.
+crossterm.workspace = true
+ratatui.workspace = true
+version.workspace = true
