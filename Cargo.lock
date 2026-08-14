@@ -4710,6 +4710,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "minvmd",
  "ratatui",
  "version",
 ]

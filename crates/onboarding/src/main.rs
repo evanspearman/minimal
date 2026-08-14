@@ -1,11 +1,11 @@
-//! `onboarding` — the loadout picker a first run puts in front of the
-//! user: every loadout's portrait in a row, arrow keys to move between
-//! them, and the chosen slug on stdout for whatever drives the rest of
-//! setup.
+//! `onboarding` — what a first run puts in front of the user: how much
+//! of the machine the VM gets, then which loadout it comes up with, and
+//! the answers on stdout for whatever drives the rest of setup.
 //!
 //! [`portrait`] holds the art and the loadout data, [`strip`] lays the
-//! portraits out, [`detail`] sets the copy under them, [`tui`] runs the
-//! picker, and this module is the CLI around all four.
+//! portraits out, [`detail`] sets the copy under them, [`resources`]
+//! models the VM's share of the host, [`tui`] runs the two screens, and
+//! this module is the CLI around them.
 
 use std::io::{self, IsTerminal as _, Write as _};
 use std::process::ExitCode;
@@ -15,6 +15,7 @@ use clap::{Parser, Subcommand};
 
 mod detail;
 mod portrait;
+mod resources;
 mod strip;
 mod tui;
 
@@ -26,11 +27,11 @@ const CANCELED: u8 = 130;
 
 #[derive(Parser)]
 #[command(name = "onboarding", version = version::VERSION, long_version = version::LONG_VERSION)]
-#[command(about = "Choose a session loadout")]
+#[command(about = "Set up a session: VM resources, then a loadout")]
 #[command(
-    long_about = "Choose a session loadout.\n\nWith no subcommand this opens the picker — arrow \
-                  keys move between the loadout portraits, enter chooses — and writes the chosen \
-                  loadout's slug to stdout as its last line."
+    long_about = "Set up a session: VM resources, then a loadout.\n\nWith no subcommand this opens \
+                  the picker — first the VM's cores and memory, then the loadout portraits — and \
+                  writes the result to stdout as `vcpus=`, `ram_mib=`, and `loadout=` lines."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -84,24 +85,28 @@ fn print_portrait(loadout: Loadout, size: Size) -> Result<()> {
         .with_context(|| format!("writing the {} portrait", loadout.slug()))
 }
 
-/// Run the picker, then leave the choice on the terminal the user is
-/// back on: the portrait, and the slug as the last line.
+/// Run the picker, then leave the result on the terminal the user is
+/// back on: the portrait, then the settings as `key=value` lines for
+/// whatever reads them.
 fn pick() -> Result<ExitCode> {
     anyhow::ensure!(
         io::stdin().is_terminal() && io::stdout().is_terminal(),
-        "the loadout picker needs a terminal; use `onboarding list` or \
+        "the picker needs a terminal; use `onboarding list` or \
          `onboarding show <LOADOUT>` when running unattended"
     );
 
-    // Quitting without choosing is not an error: say nothing and let
-    // the exit status carry it.
-    let Some(loadout) = tui::run()? else {
+    // Quitting part-way is not an error: say nothing and let the exit
+    // status carry it.
+    let Some(choice) = tui::run()? else {
         return Ok(ExitCode::from(CANCELED));
     };
 
-    print_portrait(loadout, fitting_size())?;
+    print_portrait(choice.loadout, fitting_size())?;
     let mut out = io::stdout().lock();
-    writeln!(out, "{}", loadout.slug()).context("writing the selection")?;
+    writeln!(out, "vcpus={}", choice.allocation.vcpus)
+        .and_then(|()| writeln!(out, "ram_mib={}", choice.allocation.ram_mib))
+        .and_then(|()| writeln!(out, "loadout={}", choice.loadout.slug()))
+        .context("writing the selection")?;
     Ok(ExitCode::SUCCESS)
 }
 

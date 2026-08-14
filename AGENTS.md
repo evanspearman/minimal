@@ -50,7 +50,7 @@ The CLI reference overview is [docs/reference/cli.md](docs/reference/cli.md).
 | `minvmd` | Host daemon that boots Linux microVMs via libkrun and bridges host UDS to in-VM vsock. |
 | `mip` | The Minimal package/build CLI. |
 | `mlog` | JSON file-log layer both `minimald` and `minvmd` write through; one definition of the on-disk log format. |
-| `onboarding` | The `onboarding` binary: a ratatui loadout picker over the embedded portraits. Not shipped. |
+| `onboarding` | The `onboarding` binary: a ratatui first-run picker — VM resources (against `minvmd`'s limits), then a loadout. Not shipped. |
 | `op` | Complex operations over the graph and packages (builds, cache object construction). |
 | `orchestrator` | Runtime orchestration of builds behind a pluggable `Backend`. |
 | `ot` | Operation tracking for progress rendering (render-agnostic core + drivers). |
