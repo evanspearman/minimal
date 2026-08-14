@@ -1,0 +1,72 @@
+# buildlog — a project whose lifecycle hooks stand up a real
+# development environment, rather than proving hooks fire.
+#
+# See README.md for the walkthrough. The short version:
+#
+#   just min session activate examples/lifecycle-hooks --attach
+
+[upstream]
+repo = "https://github.com/gominimal/pkgs"
+branch = "main"
+# Reused from the workspace's own `.minimal/minimal.toml` — guaranteed
+# to resolve as long as that pin does. Keep the two in sync; a pin
+# upstream has since rebased away fails at checkout with "invalid
+# reference".
+locked_commit = "b1a1b1b7275d06dcd9235708a648c88e928b9462"
+
+[stack]
+use = "shell"
+
+[session]
+# `python` is what the hooks are written in; the shebang is the point
+# (see below). Everything else they need — sqlite3, pathlib, f-strings
+# — is stdlib.
+#
+# `sqlite` is declared even though nothing calls the `sqlite3` binary.
+# Python's `sqlite3` module is a C extension linked against
+# libsqlite3.so, and upstream's python package lists sqlite as a
+# *build* dependency but not a runtime one — so the closure would not
+# carry the library and `import sqlite3` would fail. Declaring it here
+# puts it in the session. Drop this line and the activation dies in the
+# import.
+packages = ["python", "sqlite"]
+
+[session.vars]
+# So the banner's closing suggestion is copy-pasteable.
+BUILDLOG_DB = "/home/.local/state/buildlog/builds.db"
+
+# ---------------------------------------------------------------------
+# The project's hooks: external scripts, resolved against this
+# directory and carried into the session with the project tree.
+#
+# Each script says in its own header why it runs where it does. What is
+# worth knowing before reading them:
+#
+#   Both are Python, by shebang. Hook bodies run under POSIX `sh`
+#   unless their first line says otherwise; these say
+#   `#!/usr/bin/env -S python3 -u`. That is the interesting form: the
+#   interpreter gets everything after its path as ONE argument, so
+#   `env` receives `-S python3 -u` whole and splits it itself. A
+#   shebang parser that split per-word would hand `env` a bare `-S`
+#   with only `python3` attached, and neither hook would run.
+#
+#   on_attach is the only transition with a terminal. `on_activate` is
+#   headless — its output goes to the daemon log, not to you — which is
+#   why the work it does is reported back by the banner on attach.
+#
+#   Scripts arrive on the interpreter's stdin, so stdin is spoken for:
+#   the interpreter is reading the program from there. In Python that
+#   means `sys.stdin` is already at EOF, so `input()` raises
+#   EOFError — a hook cannot prompt, which is also what stops it
+#   reading your keystrokes out of an attached terminal.
+#
+#   A failing `on_activate` fails the activation — no session, and the
+#   hook's output attached to the error. `on_attach` never blocks its
+#   transition; a failure there warns and the attach proceeds.
+# ---------------------------------------------------------------------
+[[session.lifecycle_hooks]]
+description = "build history: migrate, backfill, and report"
+# 120s, not the default 60: generous headroom for a cold sandbox, but
+# nothing here is slow. The hard cap on any hook's timeout is 300s.
+on_activate = { type = "external", value = "hooks/activate.py", timeout = 120 }
+on_attach = { type = "external", value = "hooks/attach.py" }
