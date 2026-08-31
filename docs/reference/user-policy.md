@@ -138,6 +138,30 @@ depth. Patch patterns are held verbatim and compiled only at expansion time
 (after variable substitution), so a glob that is invalid on its own but valid
 once a `$VAR` is substituted is not rejected up front.
 
+A pattern with **no glob metacharacters covers that path and everything
+beneath it**, so `deny = ["~/.ssh"]` and `deny = ["~/.ssh/**"]` are
+equivalent. The subtree test is path-component aware: `~/.ssh` does not reach
+`~/.sshfs`. Naming a single file is unaffected — a file has nothing beneath
+it. This applies to `[patches]` only, because its patterns are matched
+against individual files; `[hooks]` patterns match project roots and stay
+exact (see below).
+
+> **Behaviour change.** These patterns are matched against files, so before
+> this rule existed a bare directory entry matched *nothing at all* — it was
+> inert, whichever list it sat in. Two consequences when upgrading:
+>
+> - A `deny` or `ignore` entry naming a directory starts working. If you also
+>   patch a file under that directory, a composition that used to succeed now
+>   fails (`deny`) or silently drops the file (`ignore`) — which is what the
+>   entry always asked for.
+> - An `allow` entry naming a directory starts granting. Project- and
+>   package-sourced patches beneath it used to reach the approval prompt and
+>   are now allowed without one, so a prompt you were used to seeing may stop
+>   appearing.
+>
+> Both directions deliver what the entry says. Read your `[patches]` section
+> once after upgrading if you want to confirm it still says what you meant.
+
 Both the resolved target path and, when a patch source traverses a symlink,
 the link path are checked independently; the most restrictive outcome wins.
 
@@ -165,10 +189,15 @@ Only the project is arbitrated here. Your loadouts' hooks are your own files
 and run without consulting this section; packages cannot declare hooks at all,
 and any that appear are denied outright.
 
-Patterns expand the same way patch patterns do (`~/`, `$NAME`, `${NAME}`).
-They are globs, so a path containing glob metacharacters must be escaped to
-match itself — the prompt does that for you when you choose a permanent rule,
-which is why a hand-written entry is best kept to a plain path.
+Patterns expand the same way patch patterns do (`~/`, `$NAME`, `${NAME}`),
+but they do **not** get the patch section's subtree rule: a pattern here
+names one project and matches it exactly. `allow = ["~/work/trusted"]`
+allows that project and not a project nested inside it — one approval is one
+project, and a hook is arbitrary code. Write `~/work/**` when you do mean
+every project under a directory. They are globs, so a path containing glob
+metacharacters must be escaped to match itself — the prompt does that for you
+when you choose a permanent rule, which is why a hand-written entry is best
+kept to a plain path.
 
 A project matching nothing in this section is **undecided**, not allowed: it
 reaches the prompt, and under `--no-prompt` it fails the activation with a

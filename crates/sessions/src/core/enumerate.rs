@@ -73,7 +73,11 @@ pub(crate) struct ExpandedProvenancedPatch {
 /// **Per-item follow behavior.** Each [`ExpandedProvenancedPatch`]
 /// carries its own resolved `follow_symlinks` bool — the walker
 /// reads it per iteration, so two patches in the same call can
-/// drive different follow behavior.
+/// drive different follow behavior. It governs the walk root as well
+/// as everything under it, so a source naming a symlink (to a file or
+/// to a directory) is dropped with a warning while it's off. A
+/// symlink in a *prefix* of the walk root is resolved by the OS
+/// before the walk starts and is not a follow decision.
 ///
 /// **Path safety:** every yielded file is canonicalized via
 /// [`std::fs::canonicalize`] when the item's `follow_symlinks` is
@@ -94,127 +98,26 @@ pub(crate) struct ExpandedProvenancedPatch {
 /// doesn't have that dotfile tree. Other walk failures (permission
 /// denied, non-UTF-8 paths, etc.) still accumulate and surface as
 /// [`ComposeError::PatchWalk`].
+///
+/// **Directory sources.** A source naming a directory outright
+/// enumerates that whole subtree, because a literal [`FileSet`]
+/// matches everything beneath it. `~/dotfiles/helix` and
+/// `~/dotfiles/helix/**/*` walk the same root and yield the same
+/// files; both take the multi-file [`compute_dest`] branch, so each
+/// file lands at its path relative to the directory, under `dest`.
 pub(crate) fn enumerate_patch_files(
     items: Vec<ExpandedProvenancedPatch>,
 ) -> Result<Vec<PatchFile>, ComposeError> {
     let mut out = Vec::new();
     let mut accumulated_errors = Vec::new();
     for pp in items {
-        let follow_symlinks = pp.follow_symlinks;
         let Some(walk_root) = pp.source.walk_root() else {
             accumulated_errors.push(PatchError::NoWalkRoot {
                 pattern: pp.source.pattern().to_owned(),
             });
             continue;
         };
-        let walk_root_path = walk_root.as_utf8_path().to_path_buf();
-        let dest_root = pp.dest.as_sandbox_path().as_utf8_path();
-        for entry_result in
-            walkdir::WalkDir::new(walk_root_path.as_std_path()).follow_links(follow_symlinks)
-        {
-            let entry = match entry_result {
-                Ok(entry) => entry,
-                Err(source) => {
-                    // `NotFound` is treated as "user doesn't have
-                    // this on their host" — warn and move on.
-                    // `walkdir::Error::path()` reports the specific
-                    // item that failed, which is either the walk
-                    // root itself (the common case) or a subitem
-                    // that vanished mid-walk (the race). Log both
-                    // the pattern's declared root and the failing
-                    // path so operators can distinguish. `.io_error()`
-                    // returns `None` for the loop-detection variant;
-                    // those still fail hard.
-                    if source
-                        .io_error()
-                        .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
-                    {
-                        tracing::warn!(
-                            source_pattern = %pp.source.pattern(),
-                            walk_root = %walk_root_path,
-                            missing_path = ?source.path(),
-                            "patch source not found on host filesystem; dropping"
-                        );
-                        continue;
-                    }
-                    accumulated_errors.push(PatchError::WalkFailure {
-                        root: walk_root_path.clone(),
-                        source,
-                    });
-                    continue;
-                }
-            };
-            if !entry.file_type().is_file() {
-                // A *literal* patch source that is itself a symlink is
-                // the walk root (depth 0). With follow_symlinks off the
-                // walker won't traverse it, so it's dropped here with no
-                // other signal — warn, mirroring the missing-source case,
-                // rather than failing open silently. Deeper symlinks come
-                // from glob enumeration, whose no-follow behavior is
-                // documented, so they stay quiet.
-                if !follow_symlinks && entry.depth() == 0 && entry.file_type().is_symlink() {
-                    tracing::warn!(
-                        source_pattern = %pp.source.pattern(),
-                        walk_root = %walk_root_path,
-                        "patch source is a symlink and follow_symlinks is off; dropping (set follow_symlinks = true to include it)"
-                    );
-                }
-                continue;
-            }
-            let link_path = match Utf8PathBuf::from_path_buf(entry.into_path()) {
-                Ok(p) => p,
-                Err(p) => {
-                    accumulated_errors.push(PatchError::NonUtf8Path {
-                        path_lossy: p.to_string_lossy().into_owned(),
-                    });
-                    continue;
-                }
-            };
-            if !pp.source.is_match(&link_path) {
-                continue;
-            }
-            // Walker-yielded paths are descended from `walk_root_path`,
-            // which is an absolute path because expansion already
-            // rejected anything else. `new_unchecked` is sound.
-            let walker_path = HostAbsPath::new_unchecked(link_path.clone());
-            // When `follow_symlinks` is true, canonicalize each match
-            // to obtain the symlink target. Default mode skips this:
-            // walkdir filters symlinks-to-files at the `is_file()`
-            // check above, so the walker-yielded path *is* the
-            // canonical form (or near enough), and canonicalizing
-            // would swap in OS-level prefix-symlink forms (e.g.
-            // macOS's `/tmp` → `/private/tmp`) that policy patterns
-            // don't anticipate.
-            let (link_path, target_path) = if follow_symlinks {
-                let canonical = match canonicalize_utf8(&link_path) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        accumulated_errors.push(e);
-                        continue;
-                    }
-                };
-                let target = HostAbsPath::new_unchecked(canonical);
-                // `Some(link)` only if the canonical target actually
-                // differs from the walker path. For non-symlink
-                // files, target == walker_path and we record None.
-                let link = if target.as_utf8_path() == walker_path.as_utf8_path() {
-                    None
-                } else {
-                    Some(walker_path)
-                };
-                (link, target)
-            } else {
-                (None, walker_path)
-            };
-            let user_facing = link_path.as_ref().unwrap_or(&target_path);
-            let dest = compute_dest(user_facing.as_utf8_path(), &walk_root_path, dest_root);
-            out.push(PatchFile {
-                link_path,
-                target_path,
-                dest,
-                provenance: pp.provenance.clone(),
-            });
-        }
+        walk_one_patch(&pp, &walk_root, &mut out, &mut accumulated_errors);
     }
     if accumulated_errors.is_empty() {
         return Ok(out);
@@ -222,6 +125,136 @@ pub(crate) fn enumerate_patch_files(
     Err(ComposeError::PatchWalk {
         sources: accumulated_errors,
     })
+}
+
+/// Walk one patch's `walk_root`, pushing a [`PatchFile`] per matched
+/// file onto `out` and any per-entry failure onto `errors`.
+///
+/// Split out of [`enumerate_patch_files`] purely to keep that function
+/// readable; the two share no state beyond the accumulators.
+fn walk_one_patch(
+    pp: &ExpandedProvenancedPatch,
+    walk_root: &paths::HostPath,
+    out: &mut Vec<PatchFile>,
+    errors: &mut Vec<PatchError>,
+) {
+    let follow_symlinks = pp.follow_symlinks;
+    let walk_root_path = walk_root.as_utf8_path().to_path_buf();
+    let dest_root = pp.dest.as_sandbox_path().as_utf8_path();
+    // `follow_root_links` defaults to *true*, which would traverse a
+    // symlinked walk root even with `follow_links` off — so a source
+    // naming a symlink-to-directory would silently ignore the
+    // follow decision, while a symlink-to-file (the walk root's own
+    // entry, never "descended into") honored it. Tie both to the
+    // patch's `follow_symlinks`.
+    for entry_result in walkdir::WalkDir::new(walk_root_path.as_std_path())
+        .follow_links(follow_symlinks)
+        .follow_root_links(follow_symlinks)
+    {
+        let entry = match entry_result {
+            Ok(entry) => entry,
+            Err(source) => {
+                // `NotFound` is treated as "user doesn't have
+                // this on their host" — warn and move on.
+                // `walkdir::Error::path()` reports the specific
+                // item that failed, which is either the walk
+                // root itself (the common case) or a subitem
+                // that vanished mid-walk (the race). Log both
+                // the pattern's declared root and the failing
+                // path so operators can distinguish. `.io_error()`
+                // returns `None` for the loop-detection variant;
+                // those still fail hard.
+                if source
+                    .io_error()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                {
+                    tracing::warn!(
+                        source_pattern = %pp.source.pattern(),
+                        walk_root = %walk_root_path,
+                        missing_path = ?source.path(),
+                        "patch source not found on host filesystem; dropping"
+                    );
+                    continue;
+                }
+                errors.push(PatchError::WalkFailure {
+                    root: walk_root_path.clone(),
+                    source,
+                });
+                continue;
+            }
+        };
+        if !entry.file_type().is_file() {
+            // A patch source whose walk root is itself a symlink — to
+            // a file or to a directory — arrives here at depth 0 with
+            // follow_symlinks off, because `follow_root_links` is tied
+            // to that flag above. It's dropped with no other signal,
+            // so warn, mirroring the missing-source case, rather than
+            // failing open silently. Deeper symlinks come from glob
+            // enumeration, whose no-follow behavior is documented, so
+            // they stay quiet.
+            if !follow_symlinks && entry.depth() == 0 && entry.file_type().is_symlink() {
+                tracing::warn!(
+                    source_pattern = %pp.source.pattern(),
+                    walk_root = %walk_root_path,
+                    "patch source is a symlink and follow_symlinks is off; dropping (set follow_symlinks = true to include it)"
+                );
+            }
+            continue;
+        }
+        let link_path = match Utf8PathBuf::from_path_buf(entry.into_path()) {
+            Ok(p) => p,
+            Err(p) => {
+                errors.push(PatchError::NonUtf8Path {
+                    path_lossy: p.to_string_lossy().into_owned(),
+                });
+                continue;
+            }
+        };
+        if !pp.source.matches_path_or_subtree(&link_path) {
+            continue;
+        }
+        // Walker-yielded paths are descended from `walk_root_path`,
+        // which is an absolute path because expansion already
+        // rejected anything else. `new_unchecked` is sound.
+        let walker_path = HostAbsPath::new_unchecked(link_path.clone());
+        // When `follow_symlinks` is true, canonicalize each match
+        // to obtain the symlink target. Default mode skips this:
+        // walkdir filters symlinks-to-files at the `is_file()`
+        // check above, so the walker-yielded path *is* the
+        // canonical form (or near enough), and canonicalizing
+        // would swap in OS-level prefix-symlink forms (e.g.
+        // macOS's `/tmp` → `/private/tmp`) that policy patterns
+        // don't anticipate.
+        let (link_path, target_path) = if follow_symlinks {
+            let canonical = match canonicalize_utf8(&link_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    errors.push(e);
+                    continue;
+                }
+            };
+            let target = HostAbsPath::new_unchecked(canonical);
+            // `Some(link)` only if the canonical target actually
+            // differs from the walker path. For non-symlink
+            // files, target == walker_path and we record None.
+            let link = if target.as_utf8_path() == walker_path.as_utf8_path() {
+                None
+            } else {
+                Some(walker_path)
+            };
+            (link, target)
+        } else {
+            (None, walker_path)
+        };
+        let user_facing = link_path.as_ref().unwrap_or(&target_path);
+        let dest = compute_dest(user_facing.as_utf8_path(), &walk_root_path, dest_root);
+        out.push(PatchFile {
+            link_path,
+            target_path,
+            dest,
+            provenance: pp.provenance.clone(),
+        });
+    }
 }
 
 /// [`std::fs::canonicalize`] with UTF-8 enforcement.
@@ -390,6 +423,202 @@ mod tests {
             1,
             "literal symlink source must land when follow_symlinks is on",
         );
+    }
+
+    // =================================================================
+    // Directory sources — a literal path means its whole subtree
+    // =================================================================
+
+    /// Build a one-patch item. Kept local to the directory tests so
+    /// the older tests keep spelling their items out in full.
+    fn dir_item(source: &str, dest: &str, follow_symlinks: bool) -> ExpandedProvenancedPatch {
+        use crate::core::primitives::{FileSet, PatchDest};
+        use crate::core::source::Source;
+
+        ExpandedProvenancedPatch {
+            source: FileSet::try_new(source).unwrap(),
+            dest: PatchDest::try_new(dest).unwrap(),
+            provenance: Source::UserLoadout {
+                name: "dots".to_string(),
+            },
+            follow_symlinks,
+        }
+    }
+
+    /// Sorted dests, so assertions don't depend on readdir order.
+    fn dests(files: &[PatchFile]) -> Vec<String> {
+        let mut v: Vec<String> = files.iter().map(|f| f.dest.as_str().to_owned()).collect();
+        v.sort();
+        v
+    }
+
+    /// `tempfile::tempdir` plus a canonicalized root — see the comment
+    /// in `per_patch_follow_symlinks_drives_each_walker_independently`
+    /// for why the canonicalization matters on macOS.
+    fn tree(files: &[&str]) -> (tempfile::TempDir, Utf8PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(std::fs::canonicalize(tmp.path()).unwrap()).unwrap();
+        for rel in files {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap().as_std_path()).unwrap();
+            std::fs::write(path.as_std_path(), *rel).unwrap();
+        }
+        (tmp, root)
+    }
+
+    /// The bug this module's directory handling exists to fix: a
+    /// source naming a directory used to walk that directory, match
+    /// nothing against it, and hand back zero files in silence.
+    #[test]
+    fn literal_directory_source_fans_out_recursively() {
+        let (_tmp, root) = tree(&["dots/config.toml", "dots/themes/dark.toml"]);
+
+        let files =
+            enumerate_patch_files(vec![dir_item(root.join("dots").as_str(), "config", false)])
+                .unwrap();
+
+        assert_eq!(
+            dests(&files),
+            vec!["config/config.toml", "config/themes/dark.toml"],
+        );
+    }
+
+    /// The equivalence the feature is defined by: `<dir>` and
+    /// `<dir>/**/*` select the same files and land them in the same
+    /// places.
+    #[test]
+    fn directory_source_matches_explicit_recursive_glob() {
+        let (_tmp, root) = tree(&["dots/a.toml", "dots/sub/b.toml", "dots/sub/deep/c.toml"]);
+        let dir = root.join("dots");
+
+        let bare = enumerate_patch_files(vec![dir_item(dir.as_str(), "config", false)]).unwrap();
+        let globbed =
+            enumerate_patch_files(vec![dir_item(&format!("{dir}/**/*"), "config", false)]).unwrap();
+
+        assert_eq!(dests(&bare), dests(&globbed));
+        assert_eq!(bare.len(), 3, "every file in the tree");
+    }
+
+    /// Expansion preserves a trailing `/` (see `expansion::normalize_path`),
+    /// so the walker has to treat `<dir>/` exactly like `<dir>`.
+    #[test]
+    fn trailing_slash_directory_source_behaves_the_same() {
+        let (_tmp, root) = tree(&["dots/a.toml", "dots/sub/b.toml"]);
+        let dir = root.join("dots");
+
+        let bare = enumerate_patch_files(vec![dir_item(dir.as_str(), "config", false)]).unwrap();
+        let slashed =
+            enumerate_patch_files(vec![dir_item(&format!("{dir}/"), "config", false)]).unwrap();
+
+        assert_eq!(dests(&bare), dests(&slashed));
+    }
+
+    /// The `dest`-verbatim branch keys off the source's *shape*, not
+    /// its match count: a glob still nests even when exactly one file
+    /// matches it. Pinned because the two spellings look
+    /// interchangeable and are not — `dest = "config.toml"` against a
+    /// glob produces a *directory* by that name, which reads as a bug
+    /// unless you know the rule.
+    #[test]
+    fn a_glob_matching_one_file_still_nests_under_dest() {
+        let (_tmp, root) = tree(&["dots/only.toml"]);
+
+        let globbed = enumerate_patch_files(vec![dir_item(
+            &format!("{}/*.toml", root.join("dots")),
+            "config.toml",
+            false,
+        )])
+        .unwrap();
+        assert_eq!(
+            dests(&globbed),
+            vec!["config.toml/only.toml"],
+            "a glob is a directory-shaped source however few files it matches",
+        );
+
+        let literal = enumerate_patch_files(vec![dir_item(
+            root.join("dots/only.toml").as_str(),
+            "config.toml",
+            false,
+        )])
+        .unwrap();
+        assert_eq!(
+            dests(&literal),
+            vec!["config.toml"],
+            "naming the file outright is what renames it",
+        );
+    }
+
+    /// The subtree rule must not disturb literal *file* sources: they
+    /// still take `compute_dest`'s single-file branch and land at
+    /// `dest` verbatim, renaming rather than nesting.
+    #[test]
+    fn literal_file_source_still_lands_at_dest_verbatim() {
+        let (_tmp, root) = tree(&["dots/config.toml"]);
+
+        let files = enumerate_patch_files(vec![dir_item(
+            root.join("dots/config.toml").as_str(),
+            ".config/helix/config.toml",
+            false,
+        )])
+        .unwrap();
+
+        assert_eq!(dests(&files), vec![".config/helix/config.toml"]);
+    }
+
+    /// A source naming a symlink *to a directory* obeys
+    /// `follow_symlinks` like any other symlink: dropped when it's
+    /// off, fanned out when it's on. This needs `follow_root_links` to
+    /// be tied to the flag — walkdir traverses a symlinked walk root
+    /// by default, which would have made the symlink-to-directory case
+    /// silently ignore the follow decision that the symlink-to-file
+    /// case (`literal_symlink_source_drops_off_and_lands_on`) honors.
+    #[test]
+    fn symlinked_directory_source_drops_off_and_fans_out_on() {
+        let (_tmp, root) = tree(&["real/a.toml", "real/sub/b.toml"]);
+        std::os::unix::fs::symlink(
+            root.join("real").as_std_path(),
+            root.join("link").as_std_path(),
+        )
+        .unwrap();
+        let link = root.join("link");
+
+        let dropped =
+            enumerate_patch_files(vec![dir_item(link.as_str(), "config", false)]).unwrap();
+        assert!(
+            dropped.is_empty(),
+            "a symlinked directory source must drop when follow_symlinks is off",
+        );
+
+        let landed = enumerate_patch_files(vec![dir_item(link.as_str(), "config", true)]).unwrap();
+        assert_eq!(
+            dests(&landed),
+            vec!["config/a.toml", "config/sub/b.toml"],
+            "and fan out when it's on",
+        );
+    }
+
+    /// The follow decision belongs to the walker, not to the subtree
+    /// rule: a bare directory source and the explicit `**/*` form make
+    /// the same call in both modes.
+    #[test]
+    fn symlinked_directory_source_tracks_the_explicit_glob() {
+        let (_tmp, root) = tree(&["real/a.toml", "real/sub/b.toml"]);
+        std::os::unix::fs::symlink(
+            root.join("real").as_std_path(),
+            root.join("link").as_std_path(),
+        )
+        .unwrap();
+        let link = root.join("link");
+
+        for follow in [false, true] {
+            let bare =
+                enumerate_patch_files(vec![dir_item(link.as_str(), "config", follow)]).unwrap();
+            let globbed =
+                enumerate_patch_files(vec![dir_item(&format!("{link}/**/*"), "config", follow)])
+                    .unwrap();
+
+            assert_eq!(dests(&bare), dests(&globbed), "follow_symlinks = {follow}");
+        }
     }
 
     // =================================================================

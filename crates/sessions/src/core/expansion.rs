@@ -180,6 +180,36 @@ pub enum ExpandError {
          patch sources declared by a loadout"
     )]
     LoadoutRootUnavailable { pattern: String },
+
+    /// A patch source expanded to the filesystem root. A literal path
+    /// covers everything beneath it, so `/` would walk and match the
+    /// entire filesystem — never intended, and usually the result of a
+    /// variable expanding to the empty string. Refused rather than
+    /// obeyed.
+    ///
+    /// Policy patterns are exempt: they seed no walk, and a `deny` of
+    /// `/` is a coherent (if blunt) fail-closed rule.
+    #[error(
+        "pattern `{pattern}` resolves to the filesystem root; \
+         a patch source must name a file or directory to copy from"
+    )]
+    FilesystemRoot { pattern: String },
+
+    /// A patch source expanded to the home directory itself. Same
+    /// hazard as [`ExpandError::FilesystemRoot`], one rung down: a
+    /// literal path covers everything beneath it, so `~` would copy
+    /// the entire home — caches, build trees, credentials — into the
+    /// session. Loadout-declared patches bypass the policy's `allow`
+    /// step, so nothing downstream would stop it or even ask.
+    ///
+    /// An explicit glob (`~/**/*`) is still accepted: that spelling is
+    /// deliberate in a way that a bare `~` is not.
+    #[error(
+        "pattern `{pattern}` resolves to the home directory, which would copy all \
+         of it into the session; name a subdirectory (`~/dotfiles`) or say so \
+         explicitly with a glob (`~/**/*`)"
+    )]
+    HomeDirectory { pattern: String },
 }
 
 /// Expand `raw` against `resolved_vars` and parse the result as a
@@ -329,10 +359,34 @@ fn expand_pattern(
     }
 
     let normalized = normalize_path(&out)?;
-    if require_absolute == RequireAbsolute::Yes && !normalized.starts_with('/') {
-        return Err(ExpandError::NotAbsolute {
-            pattern: normalized,
-        });
+    if require_absolute == RequireAbsolute::Yes {
+        if !normalized.starts_with('/') {
+            return Err(ExpandError::NotAbsolute {
+                pattern: normalized,
+            });
+        }
+        // Nothing but slashes left: the pattern is the filesystem
+        // root. `normalize_path` has already collapsed `//` and
+        // dropped `.`, so this catches every spelling.
+        let trimmed = normalized.trim_end_matches('/');
+        if trimmed.is_empty() {
+            return Err(ExpandError::FilesystemRoot {
+                pattern: normalized,
+            });
+        }
+        // ...and one rung down, the home directory. Checked on the
+        // *resolved* path, so `~`, `$HOME` and a hand-written
+        // `/home/you` are all caught — they name the same tree and
+        // carry the same cost. Resolved the same way the tilde prefix
+        // is, so the two never disagree about what home means; if
+        // neither source has a `HOME` there is nothing to compare
+        // against and the check simply doesn't apply.
+        let home = resolved_vars.lookup("HOME").or(anchors.home);
+        if home.is_some_and(|h| h.trim_end_matches('/') == trimmed) {
+            return Err(ExpandError::HomeDirectory {
+                pattern: normalized,
+            });
+        }
     }
     FileSet::try_new(normalized).map_err(ExpandError::from)
 }
@@ -488,6 +542,30 @@ pub fn literal_policy_pattern(path: &str) -> String {
     out
 }
 
+/// Escape the glob metacharacters in `path` so it matches itself
+/// literally, while leaving the *expander's* syntax (`~`, `$VAR`)
+/// alone.
+///
+/// The half-measure counterpart to [`literal_policy_pattern`], for
+/// callers whose input is a declared path that must still expand `~`
+/// and `$VAR`, but whose remaining characters are literal — package
+/// filesystem mappings, where a directory genuinely named `app{1}`
+/// must not be read as a brace alternation.
+///
+/// Escaping matters more than it used to: an unescaped metacharacter
+/// stops the path being a *literal* pattern, and a non-literal pattern
+/// gets no subtree treatment from
+/// [`FileSet::matches_path_or_subtree`](crate::core::primitives::FileSet::matches_path_or_subtree),
+/// so a directory mapping would enumerate nothing. `FileSet`'s scanner
+/// reads the `[X]` forms emitted here back as the literal bytes they
+/// stand for, so the round trip holds.
+#[must_use]
+pub fn escape_glob_literal(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    escape_glob_metas(path, &mut out);
+    out
+}
+
 fn escape_glob_metas(value: &str, out: &mut String) {
     for c in value.chars() {
         match c {
@@ -602,10 +680,16 @@ mod tests {
         );
     }
 
+    /// The tilde prefix handles the *bare* `~`, not just `~/...`.
+    /// Asserted through a policy pattern because the substitution is
+    /// what's under test here: as a patch *source* the result is
+    /// refused for naming the whole home tree, which
+    /// [`a_patch_source_may_not_be_the_home_directory`] covers.
     #[test]
     fn bare_tilde_substitutes_home() {
         let vars = [sv("HOME", "/home/u")];
-        assert_eq!(expand("~", &vars).unwrap(), "/home/u");
+        let fs = expand_policy_pattern("~", vars.as_slice(), None).unwrap();
+        assert_eq!(fs.pattern(), "/home/u");
     }
 
     /// `~foo` isn't `~/`, so it's not tilde-expanded. Left literal,
@@ -921,6 +1005,85 @@ mod tests {
             matches!(err, ExpandError::NotAbsolute { .. }),
             "got: {err:?}",
         );
+    }
+
+    /// A patch source of `/` is refused. A literal pattern covers
+    /// everything beneath it, so this would walk and match the whole
+    /// filesystem — and the usual way to get here is a variable that
+    /// expanded to nothing, which should be loud rather than
+    /// catastrophic.
+    #[test]
+    fn a_patch_source_may_not_be_the_filesystem_root() {
+        let vars: [ResolvedVar; 0] = [];
+        for raw in ["/", "//", "/./"] {
+            let err = expand_source(raw, vars.as_slice(), Anchors::home(None))
+                .expect_err("the filesystem root must be refused as a source");
+            assert!(
+                matches!(err, ExpandError::FilesystemRoot { .. }),
+                "{raw:?} gave {err:?}",
+            );
+        }
+    }
+
+    /// An empty `$VAR` collapsing a source to `/` is the realistic
+    /// path into the case above, so pin it end to end.
+    #[test]
+    fn a_source_that_collapses_to_root_via_an_empty_var_is_refused() {
+        let vars = [sv("PREFIX", "")];
+        let err = expand_source("$PREFIX/", vars.as_slice(), Anchors::home(None))
+            .expect_err("an empty prefix must not yield a filesystem-root source");
+        assert!(matches!(err, ExpandError::FilesystemRoot { .. }), "{err:?}");
+    }
+
+    /// The home directory is refused for the same reason as `/`, one
+    /// rung down: a literal path covers its whole subtree, so a bare
+    /// `~` would copy every cache and build tree the user owns into
+    /// the session — and a loadout's patches bypass the policy's
+    /// `allow` step, so nothing downstream would ask first. Every
+    /// spelling that resolves there is caught, since they all name the
+    /// same tree.
+    #[test]
+    fn a_patch_source_may_not_be_the_home_directory() {
+        let anchors = Anchors::home(Some("/home/u"));
+        let novars: [ResolvedVar; 0] = [];
+        for raw in ["~", "~/", "/home/u", "/home/u/"] {
+            let err = expand_source(raw, novars.as_slice(), anchors)
+                .expect_err("the home directory must be refused as a source");
+            assert!(
+                matches!(err, ExpandError::HomeDirectory { .. }),
+                "{raw:?} gave {err:?}",
+            );
+        }
+        // `$HOME` resolves through the var set rather than the anchor,
+        // and must land in the same place.
+        let vars = [sv("HOME", "/home/u")];
+        let err = expand_source("$HOME", vars.as_slice(), Anchors::default())
+            .expect_err("`$HOME` must be refused too");
+        assert!(matches!(err, ExpandError::HomeDirectory { .. }), "{err:?}");
+    }
+
+    /// The escape hatch stays open: an explicit glob is a deliberate
+    /// spelling in a way a bare `~` is not, so it still composes.
+    /// Subdirectories are of course untouched.
+    #[test]
+    fn an_explicit_glob_over_home_is_still_allowed() {
+        let anchors = Anchors::home(Some("/home/u"));
+        let novars: [ResolvedVar; 0] = [];
+        for raw in ["~/**/*", "~/dotfiles", "~/.gitconfig"] {
+            expand_source(raw, novars.as_slice(), anchors)
+                .unwrap_or_else(|e| panic!("{raw:?} should still expand, got {e:?}"));
+        }
+    }
+
+    /// Policy patterns are exempt: they seed no walk, and `deny = ["/"]`
+    /// is a coherent fail-closed rule. Refusing it there would turn a
+    /// deliberate blanket deny into a load error.
+    #[test]
+    fn a_policy_pattern_may_be_the_filesystem_root() {
+        let vars: [ResolvedVar; 0] = [];
+        let fs = expand_policy_pattern("/", vars.as_slice(), None)
+            .expect("`/` is a legal policy pattern");
+        assert!(fs.matches_path_or_subtree("/home/u/.ssh/id_rsa"));
     }
 
     // ---- expand_policy_pattern ----

@@ -711,13 +711,13 @@ impl ExpandedHooksPolicy {
             Source::Package { .. } => return CheckOutcome::Decided(Decision::Denied(item)),
             Source::Project { path } => path.as_utf8_path().to_owned(),
         };
-        if filesets_match(&self.deny, &path) {
+        if filesets_match_exact(&self.deny, &path) {
             return CheckOutcome::Decided(Decision::Denied(item));
         }
-        if filesets_match(&self.ignore, &path) {
+        if filesets_match_exact(&self.ignore, &path) {
             return CheckOutcome::Decided(Decision::Ignored);
         }
-        if filesets_match(&self.allow, &path) {
+        if filesets_match_exact(&self.allow, &path) {
             return CheckOutcome::Decided(Decision::Allowed(item));
         }
         CheckOutcome::NeedsApproval(item)
@@ -913,23 +913,24 @@ impl ExpandedPatchesPolicy {
     }
 
     /// Path-only decision; no item ownership involved. Internal
-    /// helper used by both [`check`](Self::check) and
-    /// [`check_dual`](Self::check_dual).
+    /// helper behind [`check`](Self::check), which calls it once per
+    /// path it has — the target always, the link too when symlink
+    /// resolution produced a distinct one.
     fn decide(&self, path: &camino::Utf8Path, source: &Source) -> PathDecision {
         // Deny wins over everything, including ignore. `deny` is the
         // user's emergency stop: overlapping deny+ignore rules must
         // resolve as denied so an operator can't accidentally hide a
         // would-be-rejected patch behind an ignore glob.
-        if filesets_match(&self.deny, path) {
+        if filesets_match_subtree(&self.deny, path) {
             return PathDecision::Denied;
         }
-        if filesets_match(&self.ignore, path) {
+        if filesets_match_subtree(&self.ignore, path) {
             return PathDecision::Ignored;
         }
         if matches!(source, Source::UserLoadout { .. }) {
             return PathDecision::Allowed;
         }
-        if filesets_match(&self.allow, path) {
+        if filesets_match_subtree(&self.allow, path) {
             PathDecision::Allowed
         } else {
             PathDecision::NeedsApproval
@@ -978,8 +979,28 @@ fn attach_decision<T>(decision: PathDecision, item: T) -> CheckOutcome<T> {
     }
 }
 
-fn filesets_match(sets: &[FileSet], path: &camino::Utf8Path) -> bool {
+/// Match `path` against `sets` as a **project root** — plain globs,
+/// no subtree widening.
+///
+/// Used by [`ExpandedHooksPolicy`], whose patterns name one project
+/// each. A literal pattern here matches that project and nothing else:
+/// the prompt writes exactly this form when a user allows a project's
+/// hooks (see `expansion::literal_policy_pattern`), and widening it to
+/// a subtree would extend that one approval to every project nested
+/// inside — arbitrary code execution nobody was asked about.
+fn filesets_match_exact(sets: &[FileSet], path: &camino::Utf8Path) -> bool {
     sets.iter().any(|fs| fs.is_match(path))
+}
+
+/// Match `path` against `sets` as a **file**, so a literal pattern
+/// naming a directory covers everything in it.
+///
+/// Used by [`ExpandedPatchesPolicy`], which only ever sees paths the
+/// patch walker yielded — always files. A literal directory pattern
+/// would otherwise match nothing at all, making `deny = ["~/.ssh"]`
+/// read as protection and deliver none.
+fn filesets_match_subtree(sets: &[FileSet], path: &camino::Utf8Path) -> bool {
+    sets.iter().any(|fs| fs.matches_path_or_subtree(path))
 }
 
 // =====================================================================
@@ -1389,6 +1410,222 @@ mod tests {
         assert!(
             matches!(outcome, CheckOutcome::Decided(Decision::Denied(_))),
             "non-absolute deny pattern must still match at check time",
+        );
+    }
+
+    /// Policy patterns are matched against individual *files*, so a
+    /// bare directory used to deny nothing at all — `deny = ["~/.ssh"]`
+    /// read as protection and delivered none. A literal pattern now
+    /// covers its whole subtree.
+    #[test]
+    fn patch_policy_literal_directory_covers_its_subtree() {
+        struct Item {
+            source: Source,
+        }
+        impl Provenanced for Item {
+            fn source(&self) -> &Source {
+                &self.source
+            }
+        }
+        let policy = PatchesPolicy::empty().with_deny(["~/.ssh"]);
+        let vars: [crate::core::primitives::ResolvedVar; 0] = [];
+        let expanded = policy
+            .expand_with(vars.as_slice(), Some("/home/u"))
+            .unwrap();
+        let item = || Item {
+            source: Source::UserLoadout {
+                name: "dots".to_string(),
+            },
+        };
+
+        for path in ["/home/u/.ssh", "/home/u/.ssh/id_rsa", "/home/u/.ssh/a/b"] {
+            assert!(
+                matches!(
+                    expanded.check(None, camino::Utf8Path::new(path), item()),
+                    CheckOutcome::Decided(Decision::Denied(_)),
+                ),
+                "`~/.ssh` must deny {path}",
+            );
+        }
+        // Component-aware: a sibling that merely shares the prefix
+        // string is untouched.
+        assert!(
+            !matches!(
+                expanded.check(None, camino::Utf8Path::new("/home/u/.sshfs/conf"), item()),
+                CheckOutcome::Decided(Decision::Denied(_)),
+            ),
+            "`~/.ssh` must not reach `~/.sshfs`",
+        );
+    }
+
+    /// The same rule on the permissive side. `allow` is only consulted
+    /// for non-user sources, so this goes through a `Project` item —
+    /// a loadout would auto-pass and prove nothing.
+    #[test]
+    fn patch_policy_literal_allow_directory_covers_its_subtree() {
+        struct Item {
+            source: Source,
+        }
+        impl Provenanced for Item {
+            fn source(&self) -> &Source {
+                &self.source
+            }
+        }
+        let policy = PatchesPolicy::empty().with_allow(["~/.config"]);
+        let vars: [crate::core::primitives::ResolvedVar; 0] = [];
+        let expanded = policy
+            .expand_with(vars.as_slice(), Some("/home/u"))
+            .unwrap();
+        let item = || Item {
+            source: Source::Project {
+                path: paths::HostPath::try_new("/work/proj/minimal.toml").unwrap(),
+            },
+        };
+
+        assert!(
+            matches!(
+                expanded.check(
+                    None,
+                    camino::Utf8Path::new("/home/u/.config/helix/config.toml"),
+                    item()
+                ),
+                CheckOutcome::Decided(Decision::Allowed(_)),
+            ),
+            "`~/.config` must allow files beneath it",
+        );
+        assert!(
+            matches!(
+                expanded.check(
+                    None,
+                    camino::Utf8Path::new("/home/u/.local/share/x"),
+                    item()
+                ),
+                CheckOutcome::NeedsApproval(_),
+            ),
+            "and must not allow anything outside it",
+        );
+    }
+
+    /// The hooks policy matches **project root directories**, not
+    /// files, so it must NOT get the subtree rule the patch policy
+    /// gets. A user who allowed one project's hooks approved that
+    /// project — extending it to every project nested inside would
+    /// run arbitrary code nobody was asked about.
+    ///
+    /// This is the exact form the prompt writes when a user picks
+    /// "always allow" (see `expansion::literal_policy_pattern`), so
+    /// it is the dominant real-world shape, not a corner case.
+    #[test]
+    fn hooks_policy_literal_project_path_does_not_cover_nested_projects() {
+        struct Item {
+            source: Source,
+        }
+        impl Provenanced for Item {
+            fn source(&self) -> &Source {
+                &self.source
+            }
+        }
+        let at = |p: &str| Item {
+            source: Source::Project {
+                path: paths::HostPath::try_new(p).unwrap(),
+            },
+        };
+        let policy = HooksPolicy::empty().with_allow(["~/work/trusted"]);
+        let vars: [crate::core::primitives::ResolvedVar; 0] = [];
+        let expanded = policy
+            .expand_with(vars.as_slice(), Some("/home/u"))
+            .unwrap();
+
+        assert!(
+            matches!(
+                expanded.check(at("/home/u/work/trusted")),
+                CheckOutcome::Decided(Decision::Allowed(_)),
+            ),
+            "the allowlisted project itself still runs",
+        );
+        assert!(
+            matches!(
+                expanded.check(at("/home/u/work/trusted/vendor/dep")),
+                CheckOutcome::NeedsApproval(_),
+            ),
+            "a project nested inside it must still face the prompt",
+        );
+    }
+
+    /// The deny side of the same rule: denying one project must not
+    /// silently spread to everything under it either. Exactness cuts
+    /// both ways, and the two policies genuinely differ here.
+    #[test]
+    fn hooks_policy_literal_project_path_is_exact_on_deny_too() {
+        struct Item {
+            source: Source,
+        }
+        impl Provenanced for Item {
+            fn source(&self) -> &Source {
+                &self.source
+            }
+        }
+        let at = |p: &str| Item {
+            source: Source::Project {
+                path: paths::HostPath::try_new(p).unwrap(),
+            },
+        };
+        let policy = HooksPolicy::empty().with_deny(["~/work/bad"]);
+        let vars: [crate::core::primitives::ResolvedVar; 0] = [];
+        let expanded = policy
+            .expand_with(vars.as_slice(), Some("/home/u"))
+            .unwrap();
+
+        assert!(matches!(
+            expanded.check(at("/home/u/work/bad")),
+            CheckOutcome::Decided(Decision::Denied(_)),
+        ));
+        assert!(
+            matches!(
+                expanded.check(at("/home/u/work/bad/sub")),
+                CheckOutcome::NeedsApproval(_),
+            ),
+            "write `~/work/bad/**` to cover the subtree explicitly",
+        );
+    }
+
+    /// A literal *file* pattern has no subtree, so the rule is a no-op
+    /// for it — the common case must not widen.
+    #[test]
+    fn patch_policy_literal_file_pattern_does_not_widen() {
+        struct Item {
+            source: Source,
+        }
+        impl Provenanced for Item {
+            fn source(&self) -> &Source {
+                &self.source
+            }
+        }
+        let policy = PatchesPolicy::empty().with_deny(["~/.gitconfig"]);
+        let vars: [crate::core::primitives::ResolvedVar; 0] = [];
+        let expanded = policy
+            .expand_with(vars.as_slice(), Some("/home/u"))
+            .unwrap();
+        let item = || Item {
+            source: Source::UserLoadout {
+                name: "dots".to_string(),
+            },
+        };
+
+        assert!(matches!(
+            expanded.check(None, camino::Utf8Path::new("/home/u/.gitconfig"), item()),
+            CheckOutcome::Decided(Decision::Denied(_)),
+        ));
+        assert!(
+            !matches!(
+                expanded.check(
+                    None,
+                    camino::Utf8Path::new("/home/u/.gitconfig.bak"),
+                    item()
+                ),
+                CheckOutcome::Decided(Decision::Denied(_)),
+            ),
+            "a file pattern must not reach a differently-named sibling",
         );
     }
 

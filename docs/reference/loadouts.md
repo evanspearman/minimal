@@ -194,20 +194,41 @@ so list entries only make sense with per-entry dests or glob entries):
   with `~/`.
 - Glob patterns must have a literal directory prefix to walk from:
   `~/dotfiles/**/*.lua` is fine, a bare `**/*.pem` is rejected.
+- A **plain path naming a directory takes the whole tree beneath it**:
+  `~/dotfiles/helix` is the same as `~/dotfiles/helix/**/*`. Reach for
+  the explicit glob when you want to filter (`~/dotfiles/helix/**/*.toml`).
 - `..` components are rejected wherever they appear.
 - A source path that does not exist on the host is dropped with a warning
   at activation rather than failing it, so opportunistically patching a
-  dotfile tree the host may not have is safe. Other enumeration failures
+  dotfile tree the host may not have is safe. A source that exists but
+  matches no files is simply skipped. Other enumeration failures
   (permission denied, unreadable entries) still fail the composition.
+- The source may not be the filesystem root, nor your home directory
+  itself: `/`, `~`, and `$HOME` are refused rather than copying in the
+  whole tree. Name a subdirectory (`~/dotfiles`), or ask for the whole of
+  home explicitly with a glob (`~/**/*`).
 
 **`dest`** is interpreted relative to the session user's home directory.
-Absolute paths and `..` components are rejected. For a literal (non-glob)
-source, `dest` is used verbatim as the destination file path; for glob
-sources, `dest` is the destination directory and each match's path under
-the walk root is appended to it.
+Absolute paths and `..` components are rejected.
 
-By default the walker does not follow symlinks while enumerating glob
-matches; see [`follow_symlinks`](#follow_symlinks) and the
+How `dest` is used depends on the **shape of the source**, not on how many
+files it turned out to match:
+
+- A source that is a **plain path naming one file** uses `dest` verbatim as
+  that file's destination path. This is how you rename a file on the way in.
+- **Every other source** -- a glob, or a directory -- treats `dest` as a
+  destination *directory*: each match's path relative to the walk root is
+  appended to it.
+
+The distinction is the source's shape, so a glob still nests even when only
+one file happens to match it. `source = "~/dots/*.toml"` with
+`dest = "config.toml"` creates a *directory* called `config.toml` holding
+the matched file, however few there are. Use the plain path
+(`source = "~/dots/only.toml"`) when you mean to rename.
+
+By default the walker does not follow symlinks -- neither the `source`
+path itself nor any link found beneath it; see
+[`follow_symlinks`](#follow_symlinks) and the
 [client config](#client-config).
 
 **Permissions** carry across. A patched file lands with the source file's
@@ -262,9 +283,9 @@ Details worth knowing:
 - The name is **reserved** here: a loadout that also declares a
   `LOADOUT_ROOT` variable still patches from its own directory. The variable
   reaches the session normally -- only patch sources ignore it.
-- `$LOADOUT_ROOT` alone names a directory, and a patch source matches files,
-  so it patches in nothing. Write `$LOADOUT_ROOT/**/*` to take the whole
-  tree.
+- `$LOADOUT_ROOT` alone names the loadout's directory, so it takes that
+  whole tree -- the same as `$LOADOUT_ROOT/**/*`. Write an explicit glob
+  when you want to filter it (`$LOADOUT_ROOT/**/*.toml`).
 - The directory is optional. A loadout that never references it does not
   need one, and -- like any other source -- a path that isn't there is
   skipped with a warning rather than failing the activation.
@@ -388,6 +409,12 @@ unset, the client-wide setting applies.
 follow_symlinks = true
 ```
 
+It governs the whole walk, including the source path itself: a `source`
+naming a symlink -- to a file *or* to a directory -- is skipped with a
+warning while this is off, and included once it is on. A symlink in a
+*prefix* of the path is not a follow decision and is always traversed,
+since the OS resolves it before the walk begins.
+
 ## Selecting loadouts at activation
 
 [`min session activate`](./cli-min.md#session-activate) decides which loadouts to apply
@@ -450,7 +477,7 @@ follow_symlinks  = false
 | Key | Default | Description |
 |-----|---------|-------------|
 | `default_loadouts` | `[]` | Loadouts (by filename stem) applied to each new session when no `--loadout`/`--no-loadouts` flag is given |
-| `follow_symlinks` | `false` | Follow symlinks while enumerating loadout patch sources. Turn on when your dotfile tree is a symlink farm (stow, chezmoi) and you want the walk to descend through the links |
+| `follow_symlinks` | `false` | Follow symlinks while enumerating loadout patch sources, including a `source` that is itself a symlink. Turn on when your dotfile tree is a symlink farm (stow, chezmoi) and you want the walk to descend through the links |
 
 A missing file is equivalent to the defaults; unknown keys are rejected so
 a typo (`[loadout]` for `[loadouts]`) fails loudly.

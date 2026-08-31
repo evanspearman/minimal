@@ -184,25 +184,29 @@ impl Composable for PackageComposable {
             c.push_var(ProvenancedVar::new(resolved, source.clone()));
         }
         for mapping in self.fs_mappings {
-            // Dir vs file drives the *source pattern*: a dir needs a
-            // recursive glob (`<dir>/**`) so the client walker
-            // enumerates every descendant, otherwise the walker
-            // hands back zero files and the whole mapping vanishes
-            // (with only a `tracing::warn` in the daemon log). The
-            // *destination* is always the plain path — for a dir
-            // mapping, per-file dests are computed downstream by
-            // joining the walker's relative suffix, so writing
-            // `<dir>/**` here would collapse every file to the
-            // literal glob string.
-            let (source_pattern, dest_path) = match mapping {
-                PackageFsMapping::File { path } => (path.clone(), path),
-                PackageFsMapping::Dir { path } => {
-                    let trimmed = path.trim_end_matches('/').to_owned();
-                    let source = format!("{trimmed}/**");
-                    (source, trimmed)
-                }
+            // Dir and file map the same way. A literal patch source
+            // matches the path it names *and everything beneath it*
+            // (see `sessions::core::primitives::FileSet`), so a dir
+            // mapping enumerates its whole subtree without a
+            // hand-written `<dir>/**` — and the per-file dests stay
+            // correct, because they're computed downstream by joining
+            // the walker's relative suffix onto this plain path.
+            let path = match mapping {
+                PackageFsMapping::File { path } => path,
+                // Trailing slashes are cosmetic upstream but would
+                // show up in the serialized patch; normalize.
+                PackageFsMapping::Dir { path } => path.trim_end_matches('/').to_owned(),
             };
-            let dest = PatchDest::try_new(&dest_path)?;
+            // A mapping path is a *path*, not a pattern: a package
+            // declaring `~/.config/app{1}` means a directory with
+            // those characters in its name. The source is read as a
+            // glob downstream, so escape it — otherwise the braces
+            // parse as an alternation, the pattern stops counting as
+            // literal, and the subtree rule that makes a directory
+            // mapping work at all never fires. `dest` is a plain path
+            // and takes the unescaped form.
+            let source_pattern = sessions::core::expansion::escape_glob_literal(&path);
+            let dest = PatchDest::try_new(&path)?;
             c.push_patch(ProvenancedPatch::new(
                 Patch::new(source_pattern, dest),
                 source.clone(),
@@ -273,11 +277,10 @@ mod tests {
         assert!(contribution.is_empty());
     }
 
-    /// A package's fs mappings show up as patches: dir mappings get
-    /// a recursive-glob source (so the client walker enumerates
-    /// descendants) with a plain dest (per-file dests are computed
-    /// downstream), file mappings use the path verbatim for both
-    /// source and dest.
+    /// A package's fs mappings show up as patches, dir and file alike
+    /// using the path verbatim for both source and dest. A literal
+    /// source already covers the subtree beneath it, so a dir mapping
+    /// needs no glob suffix; per-file dests are computed downstream.
     #[test]
     fn contribute_maps_fs_mappings_to_patches() {
         let comp = PackageComposable::new(
@@ -316,7 +319,7 @@ mod tests {
         // (`PatchDest::try_new` normalizes it out — a literal `~`
         // directory would otherwise land inside the sandbox home as
         // `/home/~/.claude/…`).
-        assert_eq!(by_source.get("~/.claude/**").copied(), Some(".claude"));
+        assert_eq!(by_source.get("~/.claude").copied(), Some(".claude"));
         // File mapping: source keeps `~/` for gate-time expansion;
         // dest is the same path with the tilde prefix stripped.
         assert_eq!(
@@ -328,9 +331,43 @@ mod tests {
         }
     }
 
-    /// Dir-mapping paths get any trailing `/` trimmed before the
-    /// walker glob is appended, so `~/.claude` and `~/.claude/` (and
-    /// `~/.claude////`) all compose to the same source pattern.
+    /// A mapping path containing glob metacharacters names a directory
+    /// with those characters in it, not a pattern. The source gets
+    /// escaped so it still reads as a literal path — and so the
+    /// subtree rule fires and the mapping enumerates anything at all —
+    /// while `dest` keeps the plain form.
+    #[test]
+    fn fs_mapping_paths_with_glob_metacharacters_are_escaped_in_the_source() {
+        let comp = PackageComposable::new(
+            "weird",
+            Vec::new(),
+            vec![PackageFsMapping::Dir {
+                path: "~/.config/app{1}".to_string(),
+            }],
+        );
+        let env = |_: &str| Err(std::env::VarError::NotPresent);
+        let contribution = comp.contribute(&env).expect("contribute succeeds");
+        let patch = &contribution.patches()[0];
+
+        assert_eq!(patch.patch().source(), "~/.config/app[{]1[}]");
+        assert_eq!(
+            patch.patch().dest().as_sandbox_path().as_str(),
+            ".config/app{1}",
+        );
+
+        // The round trip that matters: `FileSet`'s scanner reads the
+        // `[X]` forms back as the bytes they stand for, so the escaped
+        // source still counts as a literal path and covers the
+        // directory's contents. Asserted on the unexpanded form —
+        // `~` is irrelevant to the escaping, and at runtime expansion
+        // would have replaced it before the walker ever matches.
+        let fs = sessions::core::primitives::FileSet::try_new(patch.patch().source()).unwrap();
+        assert!(fs.matches_path_or_subtree("~/.config/app{1}/settings.json"));
+    }
+
+    /// Dir-mapping paths get any trailing `/` trimmed, so `~/.claude`
+    /// and `~/.claude/` (and `~/.claude////`) all compose to the same
+    /// source pattern.
     #[test]
     fn dir_mapping_trims_trailing_slashes() {
         for path in ["~/.claude", "~/.claude/", "~/.claude////"] {
@@ -346,8 +383,8 @@ mod tests {
             let patch = &contribution.patches()[0];
             assert_eq!(
                 patch.patch().source(),
-                "~/.claude/**",
-                "trailing slashes should collapse before appending /**"
+                "~/.claude",
+                "trailing slashes should collapse"
             );
             assert_eq!(
                 patch.patch().dest().as_sandbox_path().as_str(),

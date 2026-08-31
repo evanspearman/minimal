@@ -20,14 +20,16 @@
 //!       source = "~/dotfiles/helix/config.toml" },
 //!     { dest = "~/.config/helix/languages.toml",
 //!       source = "~/dotfiles/helix/languages.toml" },
+//!     # A source naming a directory takes the whole tree beneath it.
 //!     { dest = "~/.config/helix/themes/",
-//!       source = { base = "~/dotfiles/helix/themes", patterns = ["**/*.toml"] } },
+//!       source = "~/dotfiles/helix/themes" },
 //!
-//!     # Zellij: single config file plus a layouts directory.
+//!     # Zellij: single config file plus a layouts directory. Here an
+//!     # explicit glob, because the layouts dir holds more than `.kdl`.
 //!     { dest = "~/.config/zellij/config.kdl",
 //!       source = "~/dotfiles/zellij/config.kdl" },
 //!     { dest = "~/.config/zellij/layouts/",
-//!       source = { base = "~/dotfiles/zellij/layouts", patterns = ["**/*.kdl"] } },
+//!       source = "~/dotfiles/zellij/layouts/**/*.kdl" },
 //!
 //!     # This loadout's own file, shipped beside it in `<name>/`.
 //!     { dest = "~/.config/helix/ignore",

@@ -3139,19 +3139,27 @@ mod tests {
         /// the user-visible prefix mis-match the canonical target
         /// prefix and innocent files silently fall through to
         /// `NeedsApproval`.
+        ///
+        /// The symlink is a *prefix* component here, not the last one:
+        /// the walk root `<link>/inner` is a real directory that the
+        /// OS reaches through the link, so walkdir's root entry is a
+        /// directory and no follow decision is involved. A walk root
+        /// whose own last component is a symlink is a different case,
+        /// governed by `follow_symlinks` — see
+        /// `enumerate::tests::symlinked_directory_source_drops_off_and_fans_out_on`.
         #[cfg(unix)]
         #[test]
         fn symlinked_prefix_in_default_mode_matches_link_form_policy() {
             let tmp = tempfile::tempdir().unwrap();
             let tmp_root = Utf8Path::from_path(tmp.path()).unwrap();
             let real = tmp_root.join("real_dir");
-            std::fs::create_dir_all(real.as_std_path()).unwrap();
-            std::fs::write(real.join("conf.toml").as_std_path(), "x").unwrap();
+            std::fs::create_dir_all(real.join("inner").as_std_path()).unwrap();
+            std::fs::write(real.join("inner/conf.toml").as_std_path(), "x").unwrap();
             let link = tmp_root.join("link_dir");
             symlink(real.as_std_path(), link.as_std_path());
 
             let patch = Patch::new(
-                format!("{link}/**/*.toml"),
+                format!("{link}/inner/**/*.toml"),
                 PatchDest::try_new("etc").unwrap(),
             );
             let pp = ProvenancedPatch::new(patch, project_source());
@@ -3167,6 +3175,18 @@ mod tests {
             )
             .unwrap();
             assert_eq!(resolved.len(), 1);
+            // The link form survives to the resolved patch — the point
+            // of the regression. Canonicalizing would have rewritten
+            // this to the `real_dir` prefix.
+            assert!(
+                resolved[0]
+                    .patch
+                    .host_path()
+                    .as_str()
+                    .starts_with(&format!("{link}/")),
+                "default mode must not canonicalize away the link prefix: {}",
+                resolved[0].patch.host_path(),
+            );
         }
     }
 

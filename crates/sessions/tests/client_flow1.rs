@@ -319,6 +319,65 @@ source = "{root}/dotfiles/helix/themes/**/*.toml"
     );
 }
 
+/// A patch whose source names a directory outright takes the whole
+/// tree beneath it — the same files, at the same destinations, as the
+/// explicit `**/*` form. Before this, a bare directory source composed
+/// to nothing at all, silently.
+#[test]
+fn directory_patch_source_fans_out_like_an_explicit_glob() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    fixture_tree(
+        root,
+        [
+            ("dotfiles/helix/config.toml", "# config\n"),
+            ("dotfiles/helix/themes/nord.toml", "# nord\n"),
+            ("dotfiles/helix/themes/deep/x.toml", "# x\n"),
+        ],
+    );
+
+    let compose_with = |source: &str| {
+        let src = format!(
+            r#"name = "dev"
+
+[[patches]]
+dest = ".config/helix"
+source = "{source}"
+"#,
+        );
+        let loadout: Loadout = toml::from_str(&src).unwrap();
+        let mut composer = UserComposer::new().with_env(pinned_env(&[]));
+        composer.add(loadout).unwrap();
+        let (wire, _) = composer
+            .compose(UserPolicy::empty(), ComposeOptions::default())
+            .unwrap();
+        // readdir order isn't stable across platforms — sort before
+        // asserting, as `multi_file_patch_fans_out` does.
+        let mut dests: Vec<String> = wire
+            .patches
+            .iter()
+            .map(|sp| sp.patch.destination.as_str().to_owned())
+            .collect();
+        dests.sort();
+        dests
+    };
+
+    let bare = compose_with(&format!("{root}/dotfiles/helix"));
+    assert_eq!(
+        bare,
+        [
+            ".config/helix/config.toml",
+            ".config/helix/themes/deep/x.toml",
+            ".config/helix/themes/nord.toml",
+        ],
+    );
+    assert_eq!(
+        bare,
+        compose_with(&format!("{root}/dotfiles/helix/**/*")),
+        "a bare directory must select exactly what the explicit glob does",
+    );
+}
+
 /// User policy's `ignore` rule drops a matching var even though the
 /// item is user-origin. Regression on the gate-precedence change.
 ///

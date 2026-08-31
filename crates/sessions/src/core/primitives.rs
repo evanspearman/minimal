@@ -60,7 +60,7 @@
 use core::fmt;
 use std::str::FromStr;
 
-use camino::{Utf8Component, Utf8PathBuf};
+use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use paths::{HostAbsPath, HostPath, SandboxRelPath};
 
 // =====================================================================
@@ -766,11 +766,134 @@ impl From<VarValue> for crate::wire::primitives::WireVarSpec {
 // FileSet
 // =====================================================================
 
+/// Result of scanning a glob pattern for its literal path prefix —
+/// the shared basis of [`FileSet::walk_root`] and
+/// [`FileSet::literal_path`].
+struct LiteralScan {
+    /// The literal text consumed before the first metacharacter, with
+    /// `[X]` escapes unescaped back to `X`.
+    literal: String,
+    /// Byte offset in `literal` of the last `/` consumed, if any.
+    last_slash: Option<usize>,
+    /// `true` when the scan reached the end of the pattern without
+    /// hitting a metacharacter — i.e. the pattern *is* a literal path.
+    complete: bool,
+}
+
+impl LiteralScan {
+    /// The literal path, if the scan covered the whole pattern.
+    fn into_literal_path(self) -> Option<Utf8PathBuf> {
+        self.complete.then(|| Utf8PathBuf::from(self.literal))
+    }
+}
+
+/// Scan `pattern` up to its first unescaped glob metacharacter.
+///
+/// # Panics
+///
+/// Cannot panic in practice. The body contains one `expect` covering a
+/// logically unreachable case — the loop guard `i < bytes.len()`
+/// guarantees the next character exists.
+fn scan_literal(pattern: &str) -> LiteralScan {
+    let bytes = pattern.as_bytes();
+    let mut literal = String::with_capacity(pattern.len());
+    let mut last_slash = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'/' => {
+                last_slash = Some(literal.len());
+                literal.push('/');
+                i += 1;
+            }
+            // Single-byte bracket class `[X]` is a literal `X` — this
+            // is what `expansion::escape_glob_metas` emits to pass a
+            // glob-metacharacter through as a literal path byte.
+            // Without this carve-out, the scan would truncate at the
+            // inserted `[` and name a far wider tree than the pattern
+            // actually targets. Must precede the metacharacter arm
+            // below, which would otherwise swallow it.
+            //
+            // Safe to read `bytes[i+1]` as `char`: `bytes[i+2] == b']'`
+            // is ASCII (0x5D); UTF-8 continuation bytes are
+            // 0x80..=0xBF and so can't be `]`. So `bytes[i+1]` must
+            // itself be at a char boundary and ASCII.
+            b'[' if i + 2 < bytes.len() && bytes[i + 2] == b']' => {
+                literal.push(bytes[i + 1] as char);
+                i += 3;
+            }
+            // `\X` is globset's other escape form (on Unix, where `\`
+            // is not a path separator) and the one
+            // `expansion::escape_glob_metas` emits for a literal
+            // backslash. Without this arm the scan copies both bytes,
+            // so a path containing a backslash yields a walk root that
+            // cannot exist on disk — and the "not found" warning names
+            // a doubled-up path the user never wrote.
+            //
+            // Take the escaped character whole rather than as a byte:
+            // unlike the bracket form above, what follows `\` is
+            // unconstrained and may be multi-byte.
+            b'\\' if i + 1 < bytes.len() => {
+                let escaped = pattern[i + 1..]
+                    .chars()
+                    .next()
+                    .expect("i + 1 is in bounds, so at least one char follows");
+                literal.push(escaped);
+                i += 1 + escaped.len_utf8();
+            }
+            // A real glob metacharacter ends the literal run. `[` here
+            // is a multi-character bracket class (`[abc]`, `[a-z]`,
+            // negations); the single-byte form was handled above.
+            b'*' | b'?' | b'{' | b'[' => {
+                return LiteralScan {
+                    literal,
+                    last_slash,
+                    complete: false,
+                };
+            }
+            _ => {
+                // Copy the next UTF-8 character whole.
+                let ch_len = pattern[i..]
+                    .chars()
+                    .next()
+                    .expect("non-empty slice has at least one char")
+                    .len_utf8();
+                literal.push_str(&pattern[i..i + ch_len]);
+                i += ch_len;
+            }
+        }
+    }
+    LiteralScan {
+        literal,
+        last_slash,
+        complete: true,
+    }
+}
+
 /// A set of host-filesystem files described by a single glob pattern.
 ///
 /// Patterns are parsed at construction time, so malformed input fails at
 /// config load with a useful error rather than at apply time. The
 /// underlying pattern string is recoverable via [`Self::pattern`].
+///
+/// # Two matching modes
+///
+/// [`Self::is_match`] is the plain glob. [`Self::matches_path_or_subtree`]
+/// additionally treats a *literal* pattern — one with no unescaped glob
+/// metacharacter, as distinguished by `scan_literal` — as covering
+/// everything beneath it, so
+/// `~/dotfiles/helix` selects the same files as `~/dotfiles/helix/**/*`
+/// and a patch-policy `deny` of `~/.ssh` covers `~/.ssh/id_rsa`.
+///
+/// Callers that match against **files** want the subtree form: a bare
+/// directory would otherwise select nothing at all, since globset's
+/// `/home/u/helix` does not match `/home/u/helix/config.toml`, and
+/// forgetting the `/**/*` fails silently.
+///
+/// Callers that match against **directories** want the plain glob. The
+/// hooks policy matches project roots, where a pattern names one
+/// project exactly; widening it there would grant hook execution to
+/// every nested project too.
 ///
 /// # Walk root
 ///
@@ -795,6 +918,10 @@ impl From<VarValue> for crate::wire::primitives::WireVarSpec {
 pub struct FileSet {
     glob: globset::Glob,
     matcher: globset::GlobMatcher,
+    /// The pattern as a literal path, when it contains no unescaped
+    /// glob metacharacter — see [the type docs](Self). Precomputed
+    /// because [`Self::is_match`] consults it once per walked file.
+    literal: Option<Utf8PathBuf>,
 }
 
 impl FileSet {
@@ -808,7 +935,17 @@ impl FileSet {
         let glob = globset::Glob::new(&pattern)
             .map_err(|source| PatchError::InvalidGlob { pattern, source })?;
         let matcher = glob.compile_matcher();
-        Ok(Self { glob, matcher })
+        // An empty pattern has no meaningful subtree — and
+        // `strip_prefix("")` would answer `Ok` for every relative
+        // path, turning it into a match-anything rule.
+        let literal = scan_literal(glob.glob())
+            .into_literal_path()
+            .filter(|p| !p.as_str().is_empty());
+        Ok(Self {
+            glob,
+            matcher,
+            literal,
+        })
     }
 
     /// The original pattern string (suitable for re-serialization).
@@ -823,10 +960,51 @@ impl FileSet {
         &self.glob
     }
 
-    /// `true` iff this pattern matches `path`.
+    /// `true` iff this pattern's glob matches `path`, exactly.
+    ///
+    /// A pattern naming a directory does **not** match the files
+    /// inside it — globset's `/etc/xdg` and `/etc/xdg/a.conf` are
+    /// unrelated strings. Callers that mean "this path or anything
+    /// beneath it" want [`Self::matches_path_or_subtree`].
+    ///
+    /// The two are deliberately separate rather than one widened
+    /// predicate. Which one is correct depends on what the caller
+    /// matches *against*: against files (patch enumeration, the patch
+    /// policy) a bare directory can only have meant its contents;
+    /// against directories (the hooks policy, which matches project
+    /// roots) it names one thing exactly, and widening it would turn
+    /// an allowlisted project into an allowlisted subtree — granting
+    /// hook execution to nested projects nobody approved.
     #[must_use]
     pub fn is_match(&self, path: impl AsRef<std::path::Path>) -> bool {
         self.matcher.is_match(path.as_ref())
+    }
+
+    /// `true` iff [`Self::is_match`] holds, **or** this pattern is a
+    /// literal path (no unescaped glob metacharacter) and `path` lies
+    /// beneath it.
+    ///
+    /// This is what makes a bare directory usable as a patch source:
+    /// `~/dotfiles/helix` selects the same files as
+    /// `~/dotfiles/helix/**/*`. Literal *file* patterns are
+    /// unaffected — a file has no descendants.
+    ///
+    /// The descendant test is [`Utf8Path::strip_prefix`], which is
+    /// component-aware, so `/etc/xdg` does not match `/etc/xdgfoo/bar`.
+    /// A non-UTF-8 `path` falls back to the glob alone.
+    ///
+    /// Use this only where the matched values are files. See
+    /// [`Self::is_match`] for why the distinction matters.
+    #[must_use]
+    pub fn matches_path_or_subtree(&self, path: impl AsRef<std::path::Path>) -> bool {
+        let path = path.as_ref();
+        if self.matcher.is_match(path) {
+            return true;
+        }
+        let Some(literal) = self.literal.as_deref() else {
+            return false;
+        };
+        Utf8Path::from_path(path).is_some_and(|p| p.strip_prefix(literal).is_ok())
     }
 
     /// The longest literal path prefix in the pattern — the directory a
@@ -842,65 +1020,14 @@ impl FileSet {
     ///
     /// The returned [`HostPath`] is unexpanded — `~` and `$VAR` are still
     /// raw. Resolving those is the caller's responsibility.
-    ///
-    /// # Panics
-    ///
-    /// Cannot panic in practice. The body contains one `expect`
-    /// covering a logically unreachable case — the loop guard
-    /// `i < bytes.len()` guarantees the next character exists.
     #[must_use]
     pub fn walk_root(&self) -> Option<HostPath> {
-        let pattern = self.pattern();
-        let bytes = pattern.as_bytes();
-        let mut literal = String::with_capacity(pattern.len());
-        let mut last_slash = None;
-        let mut i = 0;
-        while i < bytes.len() {
-            let c = bytes[i];
-            match c {
-                b'/' => {
-                    last_slash = Some(literal.len());
-                    literal.push('/');
-                    i += 1;
-                }
-                b'*' | b'?' | b'{' => {
-                    return last_slash
-                        .and_then(|s| HostPath::try_new(literal[..s].to_owned()).ok());
-                }
-                // Single-byte bracket class `[X]` is a literal `X` —
-                // this is what `expansion::escape_glob_metas` emits to
-                // pass a glob-metacharacter through as a literal path
-                // byte. Without this carve-out, `walk_root` would
-                // truncate at the inserted `[` and walk a far wider
-                // tree than the pattern actually targets.
-                //
-                // Safe to read `bytes[i+1]` as `char`: `bytes[i+2] == b']'`
-                // is ASCII (0x5D); UTF-8 continuation bytes are
-                // 0x80..=0xBF and so can't be `]`. So `bytes[i+1]`
-                // must itself be at a char boundary and ASCII.
-                b'[' if i + 2 < bytes.len() && bytes[i + 2] == b']' => {
-                    literal.push(bytes[i + 1] as char);
-                    i += 3;
-                }
-                // Multi-character bracket classes (`[abc]`, `[a-z]`,
-                // negations, etc.) are real glob metas — stop here.
-                b'[' => {
-                    return last_slash
-                        .and_then(|s| HostPath::try_new(literal[..s].to_owned()).ok());
-                }
-                _ => {
-                    // Copy the next UTF-8 character whole.
-                    let ch_len = pattern[i..]
-                        .chars()
-                        .next()
-                        .expect("non-empty slice has at least one char")
-                        .len_utf8();
-                    literal.push_str(&pattern[i..i + ch_len]);
-                    i += ch_len;
-                }
-            }
+        let scan = scan_literal(self.pattern());
+        if scan.complete {
+            return HostPath::try_new(scan.literal).ok();
         }
-        HostPath::try_new(literal).ok()
+        scan.last_slash
+            .and_then(|s| HostPath::try_new(scan.literal[..s].to_owned()).ok())
     }
 
     /// Walk the host filesystem under [`Self::walk_root`] and collect
@@ -933,11 +1060,17 @@ impl FileSet {
 
         let mut paths = Vec::new();
         let mut errors = Vec::new();
-        for entry_result in walkdir::WalkDir::new(&root).follow_links(follow_links) {
+        // `follow_root_links` is tied to `follow_links` so a symlinked
+        // root isn't traversed behind the caller's back — see the
+        // matching call in `crate::core::enumerate::walk_one_patch`.
+        for entry_result in walkdir::WalkDir::new(&root)
+            .follow_links(follow_links)
+            .follow_root_links(follow_links)
+        {
             match entry_result {
                 Ok(entry) if !entry.file_type().is_file() => {}
                 Ok(entry) => match Utf8PathBuf::from_path_buf(entry.into_path()) {
-                    Ok(p) if self.is_match(&p) => {
+                    Ok(p) if self.matches_path_or_subtree(&p) => {
                         // walkdir yields concrete on-disk paths under `root`, so this
                         // cannot climb; go through the constructor rather than
                         // forging one, and skip anything that somehow does.
@@ -1609,6 +1742,146 @@ mod tests {
             let expected = expected.map(|p| HostPath::try_new(p).unwrap());
             assert_eq!(fs.walk_root(), expected, "pattern: {pattern}");
         }
+    }
+
+    /// Only a metacharacter-free pattern gets subtree treatment. The
+    /// whole-pattern counterpart of `walk_root`'s table: `walk_root`
+    /// truncates at the first meta, so it answers "starts with a
+    /// path"; the subtree rule needs "*is* a path". Escaped `[X]`
+    /// forms are literal bytes and still qualify.
+    #[test]
+    fn fileset_subtree_rule_applies_only_to_metacharacter_free_patterns() {
+        // (pattern, a path beneath it, does the subtree rule apply)
+        let cases = [
+            ("~/dotfiles/helix", "~/dotfiles/helix/config.toml", true),
+            ("/etc/xdg/", "/etc/xdg/a.conf", true),
+            // Escaped metas are literal bytes, not metacharacters.
+            ("/home/u[[]1[]]/x", "/home/u[1]/x/a.conf", true),
+            // Every flavor of real metacharacter disqualifies.
+            ("~/dotfiles/nvim/**/*.lua", "~/dotfiles/nvim/x.lua/a", false),
+            ("src/?oo.rs", "src/foo.rs/a", false),
+            ("a/b/{c,d}", "a/b/c/e", false),
+            ("/foo/[abc]/bar", "/foo/a/bar/x", false),
+        ];
+        for (pattern, below, applies) in cases {
+            let fs = FileSet::try_new(pattern).unwrap();
+            assert_eq!(
+                fs.matches_path_or_subtree(below),
+                applies,
+                "pattern {pattern:?} vs {below:?}",
+            );
+        }
+    }
+
+    /// The rule that makes a bare directory usable: a literal pattern
+    /// covers its own path *and* everything beneath it. Without it,
+    /// naming a directory selects nothing, because the patch walker
+    /// only ever matches against files.
+    #[test]
+    fn fileset_literal_pattern_covers_its_subtree() {
+        let fs = FileSet::try_new("/home/u/dotfiles/helix").unwrap();
+        assert!(
+            fs.matches_path_or_subtree("/home/u/dotfiles/helix"),
+            "the path itself",
+        );
+        assert!(fs.matches_path_or_subtree("/home/u/dotfiles/helix/config.toml"));
+        assert!(fs.matches_path_or_subtree("/home/u/dotfiles/helix/themes/dark.toml"));
+        assert!(!fs.matches_path_or_subtree("/home/u/dotfiles/zellij/config.kdl"));
+        assert!(
+            !fs.matches_path_or_subtree("/home/u/dotfiles"),
+            "the parent is not below",
+        );
+    }
+
+    /// `is_match` stays exactly the glob, with no subtree widening.
+    /// This is what keeps the hooks policy — which matches project
+    /// root *directories* — from turning one allowlisted project into
+    /// an allowlisted subtree.
+    #[test]
+    fn fileset_is_match_does_not_widen_a_literal_directory() {
+        let fs = FileSet::try_new("/home/u/work/proj").unwrap();
+        assert!(fs.is_match("/home/u/work/proj"), "the path itself");
+        assert!(
+            !fs.is_match("/home/u/work/proj/vendor/dep"),
+            "a nested path must not match the plain glob",
+        );
+        assert!(
+            fs.matches_path_or_subtree("/home/u/work/proj/vendor/dep"),
+            "...though the subtree form does, which is why they differ",
+        );
+    }
+
+    /// The descendant test is component-aware, not a string prefix
+    /// compare — the same boundary `compute_dest` panics on.
+    #[test]
+    fn fileset_subtree_match_respects_component_boundaries() {
+        let fs = FileSet::try_new("/etc/xdg").unwrap();
+        assert!(fs.matches_path_or_subtree("/etc/xdg/a.conf"));
+        assert!(!fs.matches_path_or_subtree("/etc/xdgfoo/bar"));
+        assert!(!fs.matches_path_or_subtree("/etc/xdg-extra"));
+    }
+
+    /// A literal *file* pattern gains nothing from the subtree rule —
+    /// files have no descendants — and globbed patterns are untouched.
+    #[test]
+    fn fileset_subtree_match_does_not_widen_globs_or_files() {
+        let file = FileSet::try_new("~/.gitconfig").unwrap();
+        assert!(file.matches_path_or_subtree("~/.gitconfig"));
+        assert!(!file.matches_path_or_subtree("~/.gitconfig.bak"));
+
+        let globbed = FileSet::try_new("/etc/xdg/**/*.conf").unwrap();
+        assert!(globbed.matches_path_or_subtree("/etc/xdg/a.conf"));
+        assert!(!globbed.matches_path_or_subtree("/etc/xdg/a.txt"));
+        assert!(
+            !globbed.matches_path_or_subtree("/etc/xdg"),
+            "a globbed pattern has no literal path to sit beneath",
+        );
+    }
+
+    /// Regression: the scan must unescape globset's `\X` form too, not
+    /// just `[X]`. `escape_glob_metas` emits `\\` for a literal
+    /// backslash, so without this a package or loadout mapping a path
+    /// containing one produced a walk root with a doubled backslash —
+    /// a path that cannot exist, reported back to the user as a
+    /// "not found" naming something they never wrote.
+    #[test]
+    fn fileset_scan_unescapes_backslash_escapes() {
+        let escaped = crate::core::expansion::escape_glob_literal("/a\\b/c");
+        assert_eq!(
+            escaped, "/a\\\\b/c",
+            "the producer emits a doubled backslash"
+        );
+
+        let fs = FileSet::try_new(&escaped).unwrap();
+        assert_eq!(
+            fs.walk_root().map(|p| p.as_utf8_path().to_string()),
+            Some("/a\\b/c".to_string()),
+            "the walk root must be the real on-disk path",
+        );
+        assert!(
+            fs.is_match("/a\\b/c"),
+            "the glob still matches its own path"
+        );
+        assert!(
+            fs.matches_path_or_subtree("/a\\b/c/inner.toml"),
+            "and it still counts as a literal path, so it covers its subtree",
+        );
+    }
+
+    /// A hand-written `\*` means a literal asterisk, not a wildcard —
+    /// the pattern stays literal and the scan reports the real path.
+    #[test]
+    fn fileset_backslash_escaped_metacharacter_stays_literal() {
+        let fs = FileSet::try_new("/tmp/build\\*").unwrap();
+        assert_eq!(
+            fs.walk_root().map(|p| p.as_utf8_path().to_string()),
+            Some("/tmp/build*".to_string()),
+        );
+        assert!(fs.matches_path_or_subtree("/tmp/build*/x"));
+        assert!(
+            !fs.matches_path_or_subtree("/tmp/build-other/x"),
+            "the escape must not leak back into wildcard behaviour",
+        );
     }
 
     /// Regression: `walk_root` must unescape `[X]` single-char bracket
