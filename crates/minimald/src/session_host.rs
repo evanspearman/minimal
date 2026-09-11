@@ -574,7 +574,7 @@ impl Binding {
         name: String,
         archives_dir: std::path::PathBuf,
     ) -> (mpsc::Sender<BindingMsg>, JoinHandle<()>) {
-        let (tx, rx) = mpsc::channel(4);
+        let (tx, rx) = mpsc::channel(BINDING_QUEUE_SLOTS);
 
         let binding = Self {
             channel,
@@ -1310,6 +1310,38 @@ impl WeakHostHandle {
 /// [`HOST_PROBE_TIMEOUT`](crate::session::HOST_PROBE_TIMEOUT).
 pub(crate) const HOST_MAILBOX_CAPACITY: usize = 8;
 
+/// Slots in the host→binding queue, each holding one read off the pty master
+/// (so at most [`Host::stdout_buf`]'s 8 KiB).
+///
+/// This is the only elastic buffer between a session's output and the ssh
+/// channel, and it used to be 4 — 32 KiB, under 10 ms of slack for an app
+/// driving an image-capable terminal. Too little to ride out an ssh window
+/// refill, so the queue sat full and the host loop lived in backpressure. The
+/// wedge that caused is fixed in `step()`, but a queue this shallow still turns
+/// every window round-trip into a stall of the session process, so give it
+/// enough depth to absorb one.
+///
+/// Not a fix for a client that is persistently slower than the session's
+/// output: no finite queue is. It bounds jitter, and backpressure handles the
+/// rest.
+const BINDING_QUEUE_SLOTS: usize = 64;
+
+/// Waits for a slot in the binding's queue, given the sender the caller cloned
+/// out of `Host::remote`.
+///
+/// Split out of `step()`'s `select!` so the branch's future owns its sender
+/// rather than borrowing `self`. `None` parks forever: the branch is disarmed
+/// by its `if` guard in that case, and a future that never resolves is the
+/// honest thing to hand `select!` regardless.
+async fn reserve_binding_slot(
+    tx: Option<mpsc::Sender<BindingMsg>>,
+) -> Result<mpsc::OwnedPermit<BindingMsg>, mpsc::error::SendError<()>> {
+    match tx {
+        Some(tx) => tx.reserve_owned().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// The handle to the session host - the running process.
 #[derive(Debug, Clone)]
 pub struct HostHandle {
@@ -1585,6 +1617,26 @@ pub(crate) struct Host<P: SessionProcess, G: SessionGuard> {
     //
     // (<buffer>, <number of bytes from buffer already written>)
     stdin_buf: Option<(bytes::Bytes, usize)>,
+
+    // The mirror of `stdin_buf` for the outbound direction: one chunk read off
+    // the master and not yet handed to the binding.
+    //
+    // It exists so the master read and the binding send are separate select
+    // arms. Awaiting the send inside the read arm parks the whole `step()`
+    // select whenever the binding is slower than the session's output, and
+    // that select is also what services the detach chord, resizes, kills and
+    // the RPC mailbox — so a client that cannot keep up wedges the session
+    // instead of merely lagging it. An app rendering to an image-capable
+    // terminal (a Wayland compositor in kitty-graphics mode, say) sustains
+    // megabytes per second and reaches that state in about a minute.
+    //
+    // Holding the chunk here instead means the read arm never awaits: when the
+    // binding is backed up we simply stop reading the master, the pty buffer
+    // fills, and the session process blocks in its own `write(2)`. That is the
+    // correct place for the backpressure to land, and it is lossless —
+    // dropping bytes would tear escape sequences in half and leave the client's
+    // terminal wedged in a parser state it cannot leave.
+    stdout_pending: Option<Vec<u8>>,
 
     // The per-sandbox network attachment (own-IP switch wiring), if any. Torn
     // down explicitly in `mainloop` when the session ends, before `_guard` (and
@@ -2997,6 +3049,7 @@ impl<P: SessionProcess, G: SessionGuard> Host<P, G> {
             binding_generation: 0,
             stdout_buf: vec![0u8; 8 * 1024],
             stdin_buf: None,
+            stdout_pending: None,
             net_guard,
             tty_path,
             composition,
@@ -3249,6 +3302,16 @@ impl<P: SessionProcess, G: SessionGuard> Host<P, G> {
         // each iteration and never fire while other events keep waking the
         // loop).
         let chord_flush_deadline = self.chord_flush_deadline;
+
+        // An owned sender for the stdout delivery arm, cloned out of `self` so
+        // that arm's future borrows nothing the other arms' bodies also touch.
+        // `None` whenever there is nothing to deliver, which is what disarms
+        // the branch.
+        let stdout_sender = self
+            .stdout_pending
+            .is_some()
+            .then(|| self.remote.as_ref().map(|(tx, _hnd)| tx.clone()))
+            .flatten();
         tokio::select! {
             // Read actor messages.
             Some(msg) = self.receiver.recv() => {
@@ -3328,8 +3391,14 @@ impl<P: SessionProcess, G: SessionGuard> Host<P, G> {
                     }
                 }
             },
-            // Read from master - stdout of session process => ssh channel (if any)
-            r = self.master.readable() => {
+            // Read from master - stdout of session process => ssh channel (if any).
+            //
+            // Gated on `stdout_pending` being empty for the same reason the
+            // stdin arm below is gated on `stdin_buf`: one chunk is in flight
+            // at a time, and the arm that delivers it does the waiting. Leaving
+            // the master unread is what applies backpressure to the session
+            // process when the client is slow.
+            r = self.master.readable(), if self.stdout_pending.is_none() => {
                 let mut guard = match r {
                     Ok(g) => g,
                     Err(e) => {
@@ -3345,14 +3414,13 @@ impl<P: SessionProcess, G: SessionGuard> Host<P, G> {
                         let b = &self.stdout_buf[..n];
                         self.attrs.stdout_last = Some(SystemTime::now());
                         self.parser.process(b);
-                        if let Some((tx, _hnd)) = self.remote.as_mut() {
-                            match tx.send(BindingMsg::Stdin(b.to_vec())).await {
-                                Ok(()) => {},
-                                Err(e) => {
-                                    tracing::warn!("failed stdout=>remote send: {e}");
-                                    self.remote = None;
-                                }
-                            };
+                        // Queue rather than send: the delivery arm owns the
+                        // wait. With no binding attached the bytes are dropped
+                        // exactly as before — the parser above has already
+                        // folded them into the screen a reattach will redraw
+                        // from.
+                        if self.remote.is_some() {
+                            self.stdout_pending = Some(b.to_vec());
                         }
                     }
                     // Every errno except `WouldBlock` (which `try_io` routes to
@@ -3365,6 +3433,31 @@ impl<P: SessionProcess, G: SessionGuard> Host<P, G> {
                         return Err(());
                     },
                     Err(_would_block) => {},
+                }
+            },
+            // Deliver the queued stdout chunk to the binding. This is the arm
+            // that waits when the client is slow, and because it is an arm
+            // rather than an `await` inside the read arm, every other branch —
+            // the detach chord above all — keeps being serviced while it does.
+            res = reserve_binding_slot(stdout_sender), if self.stdout_pending.is_some() => {
+                match res {
+                    Ok(permit) => {
+                        // The guard above proves the chunk is there, and
+                        // nothing else takes it.
+                        let chunk = self
+                            .stdout_pending
+                            .take()
+                            .expect("stdout delivery arm runs only with a queued chunk");
+                        // Reserved capacity, so this cannot block or fail.
+                        permit.send(BindingMsg::Stdin(chunk));
+                    }
+                    Err(e) => {
+                        // The binding is gone. Drop both it and the chunk it
+                        // was owed; a later attach redraws from the parser.
+                        tracing::warn!("failed stdout=>remote send: {e}");
+                        self.remote = None;
+                        self.stdout_pending = None;
+                    }
                 }
             },
             // Read from remote (ssh channel) - these keystrokes need writing to the pty.
@@ -3909,6 +4002,81 @@ mod tests {
             !exit.is_abnormal(),
             "a shell that exited on its own is not abnormal: {exit:?}",
         );
+    }
+
+    /// A binding that stops draining must not wedge the host.
+    ///
+    /// The stdout relay used to `await` its send to the binding from inside
+    /// the read arm of `step()`'s `select!`. That select is also what serves
+    /// the mailbox, the detach chord, resizes and stdin, so a client slower
+    /// than the session's output parked all of them: the kill below would sit
+    /// unread in the mailbox and `mainloop` would never return. Recovery meant
+    /// killing the daemon. An app driving an image-capable terminal sustains
+    /// megabytes per second and got there in about a minute.
+    ///
+    /// The binding here is given a single slot and never read, so the queue is
+    /// full after one chunk and the delivery arm has to wait. The host is
+    /// still expected to answer a kill while it does — that is the whole
+    /// property. On the old code this test hangs and trips its timeout.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stalled_binding_does_not_wedge_the_host() {
+        let (mut host, handle) = Host::build(
+            MockLauncher,
+            "test-session".to_string(),
+            "user".to_string(),
+            test_paths(),
+            DEFAULT_SIZE,
+            None,
+            None,
+            None,
+            std::env::temp_dir(),
+            sessions::SessionId::nil(),
+            None,
+            ConnectionEnv::new(),
+        )
+        .await
+        .expect("failed to build host");
+
+        // One slot, filled up front, with `rx` held to end of scope and never
+        // read. Pre-filling is what makes this deterministic: the queue is
+        // already full before the host starts, so the very first thing the
+        // session writes has nowhere to go and delivery parks straight away —
+        // no dependence on how much the mock shell emits, or how fast.
+        //
+        // `rx` is bound rather than dropped because dropping it closes the
+        // channel and sends the host down the detach path instead.
+        let (tx, _rx_never_drained) = mpsc::channel(1);
+        tx.send(BindingMsg::Stdin(b"occupies the only slot".to_vec()))
+            .await
+            .expect("the first slot is free");
+        host.remote = Some((tx, tokio::spawn(async {})));
+
+        let stdin = host.remote_tx.clone();
+        let task = tokio::spawn(host.mainloop());
+
+        // Guarantee the session writes something the host then cannot hand
+        // over: the mock shell echoes every line it reads.
+        stdin
+            .send(stdin_bytes(b"provoke some output\n".to_vec()))
+            .await
+            .expect("failed to send to the mock shell");
+
+        // Let the echo travel back through the pty and reach the host's read
+        // arm before the kill goes in. Without this the kill can win the race
+        // and be serviced before the host ever holds a chunk it cannot deliver,
+        // which passes whether or not the bug is present -- and so tests
+        // nothing.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Queued even on a wedged loop — the mailbox has room. Whether it is
+        // ever *serviced* is what the timeout below actually measures.
+        let _ = handle.kill(false).await;
+
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("a host whose binding stopped draining must still service its mailbox")
+            .expect("host task should not panic during teardown")
+            .expect("mainloop should return the reaped exit status");
     }
 
     /// Reads forwarded stdout off the binding channel until `needle` shows up.
