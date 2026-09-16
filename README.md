@@ -55,7 +55,7 @@ Not on one of these platforms yet? Tell us what you'd like to see supported in [
 To get started, install Minimal with the following shell command:
 
 ```shell
-curl --proto "=https" --tlsv1.2 -fsSL 'https://go.minimal.dev/' | sh
+curl --proto "=https" --tlsv1.2 -fsSL 'https://go.minimal.dev/stable' | sh
 ```
 
 This installs the stable channel of Minimal, adds `min` to your PATH, and sets up shell completions for bash, fish, and zsh.
@@ -63,7 +63,7 @@ This installs the stable channel of Minimal, adds `min` to your PATH, and sets u
 Minimal can be uninstalled with:
 
 ```shell
-curl --proto "=https" --tlsv1.2 -fsSL 'https://go.minimal.dev/' | sh -s -- --uninstall
+curl --proto "=https" --tlsv1.2 -fsSL 'https://go.minimal.dev/stable' | sh -s -- --uninstall
 ```
 
 ## For coding agents
@@ -81,7 +81,19 @@ Contributors to this repository should read [AGENTS.md](AGENTS.md).
 
 ## Getting Started
 
-The examples below walk through the two most common workflows: starting a brand-new project inside a sandbox, and joining an existing project that already has a `minimal.toml`. Once sessions are running, `min dash` opens a terminal UI for browsing and managing them without attaching to each one. `min session policy` prints the effective networking policy for a session.
+If you have a repository and want a session, three commands get you there — no GitHub PAT, no keychain entry, no account. The two walkthroughs after them add a GitHub credential: starting a brand-new project inside a sandbox, and joining an existing project that already has a `minimal.toml`. Once sessions are running, `min dash` opens a terminal UI for browsing and managing them without attaching to each one. `min session policy` prints the effective networking policy for a session.
+
+### Start in three commands
+
+Run these from the root of a repository that has no `minimal.toml` yet. No PAT, no keychain entry, no account:
+
+```shell
+curl --proto "=https" --tlsv1.2 -fsSL https://go.minimal.dev/stable | sh
+min init
+min session activate --attach
+```
+
+Joining a project that already ships a `minimal.toml`? Skip `min init`; the walkthrough below covers it.
 
 ### Create a new project with Minimal
 
