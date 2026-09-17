@@ -371,6 +371,33 @@ echo "session exec proof OK"
 echo "::endgroup::"
 
 # ---------------------------------------------------------------------------
+# Guest egress proof. Every VM lane wires the gvproxy switch for the guest's
+# egress (NAT + DNS), yet nothing else here asserts it works — and gvproxy
+# resolution is best-effort and never errors, so a lane that silently loses the
+# switch boots switchless, has no egress, and still reports green. The symptom
+# then reaches a user as a bogus "could not resolve host" that is not a DNS
+# problem. Prove reachability from inside the live session: the `shell` stack
+# composes curl, so no package is added, and two distinct hosts make a pass
+# real resolution rather than one cached answer. Gated on a seed we own,
+# because only then is the shell stack (and thus curl) guaranteed present.
+if [ -n "$SEED_DIR" ] || [ -n "$SEEDED_MFILE" ]; then
+  echo "::group::guest egress proof (curl from inside the session)"
+  for egress_host in example.com example.org; do
+    egress_out="$(mnl session exec "$sid" \
+      "curl -sS -o /dev/null -w 'HTTP:%{http_code}' --max-time 30 https://$egress_host" \
+      2>"$WORK/egress.err")"
+    egress_status=$?
+    if [ "$egress_status" -ne 0 ] || [ "$egress_out" != "HTTP:200" ]; then
+      echo "::error::guest egress to https://$egress_host failed (exec status ${egress_status}, got '${egress_out:-<none>}', want HTTP:200): the session has no working egress. On a VM lane (E2E_VM='${E2E_VM:-}') a lost gvproxy switch is one hypothesis — a switchless boot has no NAT/DNS — but a nonzero exec status or a non-200 code can equally be a DNS, TLS/CA, or exec-transport failure; the guest boot console and curl stderr follow in the diagnostics."
+      echo "--- curl stderr ---"; cat "$WORK/egress.err" 2>/dev/null || true
+      fail
+    fi
+  done
+  echo "guest egress proof OK (DNS + HTTPS reachable from the session)"
+  echo "::endgroup::"
+fi
+
+# ---------------------------------------------------------------------------
 # `min task run` proof: a declared task runs in an ephemeral session — output
 # streamed through, the task's exit code relayed, the session destroyed
 # afterwards (or kept with --keep). Runs against its own tiny seeded project:
