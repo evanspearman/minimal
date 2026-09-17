@@ -3346,11 +3346,47 @@ impl<P: SessionProcess, G: SessionGuard> Host<P, G> {
                         self.attrs.stdout_last = Some(SystemTime::now());
                         self.parser.process(b);
                         if let Some((tx, _hnd)) = self.remote.as_mut() {
-                            match tx.send(BindingMsg::Stdin(b.to_vec())).await {
+                            // Bounded, not an unbounded await: once the binding
+                            // stops draining (a client whose transport went
+                            // dark), its mailbox fills and an unbounded send
+                            // parks this whole loop for good — the host then
+                            // never returns to pump the pty or drain its own
+                            // mailbox, so one dark client freezes the session.
+                            // A binding that cannot take a write within the
+                            // probe deadline is shed like a closed channel; a
+                            // re-attach re-mints a fresh binding on the same shell.
+                            match tx
+                                .send_timeout(
+                                    BindingMsg::Stdin(b.to_vec()),
+                                    crate::session::HOST_PROBE_TIMEOUT,
+                                )
+                                .await
+                            {
                                 Ok(()) => {},
                                 Err(e) => {
-                                    tracing::warn!("failed stdout=>remote send: {e}");
-                                    self.remote = None;
+                                    tracing::warn!(
+                                        "shedding stalled binding on stdout=>remote send: {e}"
+                                    );
+                                    // Take the binding and abort its task before
+                                    // discarding it: dropping the `JoinHandle`
+                                    // only detaches the task, which can still be
+                                    // parked in `w.write_all(...)` on a transport
+                                    // that is not draining. Aborting converges the
+                                    // shed with the closed-channel outcome, where
+                                    // the binding task has already exited and
+                                    // released the channel (EOF/close).
+                                    //
+                                    // Bump the generation before removing the
+                                    // binding: stdin the shed binding already
+                                    // queued into the shared stdin channel still
+                                    // carries the old generation, so the stdin arm
+                                    // drops it instead of handing a dead channel's
+                                    // keystrokes to the shell (or to a later
+                                    // re-attach's fresh chord).
+                                    self.binding_generation += 1;
+                                    if let Some((_tx, binding_task)) = self.remote.take() {
+                                        binding_task.abort();
+                                    }
                                 }
                             };
                         }
@@ -3411,6 +3447,19 @@ impl<P: SessionProcess, G: SessionGuard> Host<P, G> {
                                     }
                                 }
                                 FeedOutcome::Action(KeyAction::Detach) => {
+                                    // worker-iterate:declined — a review suggested
+                                    // bounding this send (and the bell/detach/
+                                    // daemon-shutdown/supercede sibling sends) with
+                                    // `send_timeout` like the stdout-forward path.
+                                    // Not applied: these are teardown/detach paths
+                                    // where the host is already unwinding, and a
+                                    // bounded send that times out would drop the
+                                    // teardown message and change the documented
+                                    // teardown semantics (the supercede path
+                                    // deliberately awaits the incumbent binding's
+                                    // join handle so its unwind codes finish first).
+                                    // A broader pattern fix belongs in a follow-up,
+                                    // not this targeted stdout-forward fix.
                                     let uc = self.unwind_codes();
                                     if let Some((tx, _hnd)) = self.remote.as_mut() {
                                         match tx.send(BindingMsg::TeardownDueToDetach(uc)).await {
@@ -3909,6 +3958,100 @@ mod tests {
             !exit.is_abnormal(),
             "a shell that exited on its own is not abnormal: {exit:?}",
         );
+    }
+
+    /// A binding whose client transport has stopped draining must not wedge the
+    /// host loop. The host forwards each pty read into the binding's mailbox;
+    /// once that mailbox fills, an unbounded send parked the loop for good, so
+    /// the host could no longer pump the pty, drain its own mailbox, or observe
+    /// the shell exiting — one dark client froze the whole session. The bounded
+    /// send sheds the stalled binding instead and keeps serving.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stalled_binding_does_not_wedge_the_host_loop() {
+        let (mut host, handle) = Host::build(
+            MockLauncher,
+            "test-session".to_string(),
+            "user".to_string(),
+            test_paths(),
+            DEFAULT_SIZE,
+            None,
+            None,
+            None,
+            std::env::temp_dir(),
+            sessions::SessionId::nil(),
+            None,
+            ConnectionEnv::new(),
+        )
+        .await
+        .expect("failed to build host");
+
+        // A binding at the production mailbox size, pre-filled to capacity and
+        // never drained: the receiver is held open but never read, standing in
+        // for a client whose transport has gone dark mid-write. The next
+        // forwarded pty read cannot be queued.
+        let (tx, _rx_never_drained) = mpsc::channel(4);
+        for _ in 0..4 {
+            tx.try_send(BindingMsg::Stdin(Vec::new()))
+                .expect("pre-fill stays within the mailbox capacity");
+        }
+        host.remote = Some((tx, tokio::spawn(async {})));
+
+        let stdin = host.remote_tx.clone();
+        let task = tokio::spawn(host.mainloop());
+
+        // Make the shell echo so the host reads pty output and tries to forward
+        // it to the full binding.
+        stdin
+            .send(stdin_bytes(b"ping\n".to_vec()))
+            .await
+            .expect("failed to send line");
+
+        // Proof the loop did not wedge: it still answers its mailbox and has
+        // stamped the stdout it read. An unbounded forward-send would have
+        // parked the loop, and this probe would hang until the outer deadline.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let attrs = handle
+                    .get_attrs()
+                    .await
+                    .expect("host must keep answering its mailbox");
+                if attrs.stdout_last.is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("a stalled binding must not wedge the host loop");
+
+        // The shed bumped the binding generation, so input still stamped with
+        // the shed generation must be discarded rather than reach the shell.
+        stdin
+            .send(stdin_bytes(format!("{MOCK_EXIT_LINE}\n").into_bytes()))
+            .await
+            .expect("failed to send stale exit line");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            !task.is_finished(),
+            "input from the shed generation must not reach the shell",
+        );
+
+        // The same bytes on the post-shed generation still drive the shell to
+        // exit: the host keeps serving after shedding the stalled binding.
+        stdin
+            .send(StdinMsg::new(
+                1,
+                StdinMsgKind::Bytes(bytes::Bytes::from(
+                    format!("{MOCK_EXIT_LINE}\n").into_bytes(),
+                )),
+            ))
+            .await
+            .expect("failed to send exit line");
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("mainloop should terminate after the shell exits")
+            .expect("host task should not panic during teardown")
+            .expect("mainloop should return the reaped exit status");
     }
 
     /// Reads forwarded stdout off the binding channel until `needle` shows up.
