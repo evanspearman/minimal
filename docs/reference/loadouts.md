@@ -657,8 +657,9 @@ patches = [
 
 The daemon's hook goes in before your file runs, which leaves one sharp
 edge: bash's refresh is a `DEBUG` trap, and a `~/.bashrc` that installs a
-`DEBUG` trap of its own replaces it. Call `__minimal_attach_env` from yours
-to keep the [`TERM` refresh](#attached-terminal) working.
+`DEBUG` trap of its own replaces it. Have your trap call
+`__minimal_attach_env` to keep the [`TERM` refresh](#attached-terminal)
+working.
 
 Interactive setup can also travel through the environment, i.e. through
 `[vars]`, which is where the prompt and the banner live:
@@ -803,7 +804,7 @@ mechanism is not a var at all: `PROMPT_COMMAND` is composed, and the MOTD
 recipe unsets it. A trap is shell state, which nothing in a composition can
 reach. Your own `~/.bashrc` can, though — the same rc sources it, right
 after setting the trap — so a `DEBUG` trap you install there replaces this
-one; call `__minimal_attach_env` from yours to keep the refresh.
+one; have your trap call `__minimal_attach_env` to keep the refresh.
 
 #### Other POSIX shells {#attached-terminal-posix}
 
