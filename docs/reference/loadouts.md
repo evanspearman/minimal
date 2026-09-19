@@ -638,12 +638,12 @@ installs the [attached terminal](#attached-terminal) hook and then sources
 `.bashrc` applies — the same way a patched `.zshrc` or `config.fish` does
 for those shells.
 
-`~/.bashrc`, and nothing else — that is the file bash itself would read
-here. A session shell is an interactive **non-login** bash, and the login
-chain (`~/.bash_profile`, `~/.bash_login`, `~/.profile`) belongs to a login
-shell, which this is not: `shopt login_shell` reports off inside it. Those
-files hold once-per-login setup, so running them here would be a thing
-bash does nowhere else.
+`~/.bashrc`, and nothing else — that is the file bash would read here on
+its own, had `--rcfile` not displaced it. A session shell is an interactive
+**non-login** bash, and the login chain (`~/.bash_profile`,
+`~/.bash_login`, `~/.profile`) belongs to a login shell, which this is not:
+`shopt login_shell` reports off inside it. Those files hold once-per-login
+setup, so running them here would be a thing bash does nowhere else.
 
 If your bash setup lives in `~/.bash_profile`, point the patch at
 `.bashrc` — a patch names its own destination, so the file's name on your
