@@ -1,7 +1,7 @@
 use std::time::Duration;
 
+use boxes::SessionId;
 use russh::ChannelMsg;
-use sessions::SessionId;
 
 use minimald_rpc::{GetSessionRecord, GetSessionRecordRequest};
 
@@ -279,7 +279,7 @@ async fn attach_to_an_unconfigured_session_configures_it_rather_than_failing() {
             .unwrap()
             .expect("the record should exist")
             .status,
-        sessions::SessionStatus::Active,
+        boxes::SessionStatus::Active,
     );
 }
 
@@ -1559,7 +1559,7 @@ async fn detach_chord_detaches_channel_then_session_resumes_on_reattach() {
 /// the dynamic matcher end-to-end through the real attach path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remapped_leader_detaches_old_leader_forwards() {
-    use sessions::keys::{DETACH_KEY_ENV, LEADER_ENV};
+    use boxes::keys::{DETACH_KEY_ENV, LEADER_ENV};
 
     let server = TestServer::new().await;
     let mut client = server.connect().await;
@@ -1665,7 +1665,7 @@ async fn collect_to_close(ch: &mut russh::Channel<russh::client::Msg>) -> String
 /// effective chord is `ctrl-]` then `x`. The unsafe byte forwards as data.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rejected_leader_falls_back_to_default_chord() {
-    use sessions::keys::{DETACH_KEY_ENV, LEADER_ENV};
+    use boxes::keys::{DETACH_KEY_ENV, LEADER_ENV};
 
     let server = TestServer::new().await;
     let mut client = server.connect().await;
@@ -1701,7 +1701,7 @@ async fn rejected_leader_falls_back_to_default_chord() {
 // coalescing path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reattach_renegotiates_the_chord_per_channel() {
-    use sessions::keys::{DETACH_KEY_ENV, LEADER_ENV};
+    use boxes::keys::{DETACH_KEY_ENV, LEADER_ENV};
 
     let server = TestServer::new().await;
     let mut client = server.connect().await;
@@ -2028,8 +2028,8 @@ fn marker_body(marker: &std::path::Path) -> String {
 
 /// An inline hook script. The timeout is generous because a loaded box
 /// slowing a hook down should not read as a hook that didn't fire.
-fn inline(body: String) -> sessions::wire::primitives::WireHookScript {
-    sessions::wire::primitives::WireHookScript::Inline {
+fn inline(body: String) -> boxes::wire::primitives::WireHookScript {
+    boxes::wire::primitives::WireHookScript::Inline {
         body,
         timeout_secs: 60,
     }
@@ -2045,12 +2045,12 @@ fn inline(body: String) -> sessions::wire::primitives::WireHookScript {
 /// no policy gate applies to those, so a test drives the actor's hook
 /// wiring without also driving the project-approval flow.
 fn contribution_with_hook(
-    hook: sessions::wire::primitives::WireLifecycleHook,
-) -> sessions::wire::request::WireContribution {
-    sessions::wire::request::WireContribution {
-        lifecycle_hooks: vec![sessions::wire::primitives::WireProvenancedHook {
+    hook: boxes::wire::primitives::WireLifecycleHook,
+) -> boxes::wire::request::WireContribution {
+    boxes::wire::request::WireContribution {
+        lifecycle_hooks: vec![boxes::wire::primitives::WireProvenancedHook {
             hook,
-            source: sessions::wire::primitives::WireSource::UserLoadout {
+            source: boxes::wire::primitives::WireSource::UserLoadout {
                 name: "test".to_string(),
             },
         }],
@@ -2059,7 +2059,7 @@ fn contribution_with_hook(
 }
 
 /// The session's on-disk status, or `None` once it is gone.
-async fn record_status(client: &mut TestClient, id: SessionId) -> Option<sessions::SessionStatus> {
+async fn record_status(client: &mut TestClient, id: SessionId) -> Option<boxes::SessionStatus> {
     client
         .call::<GetSessionRecord>(&GetSessionRecordRequest::Id(id))
         .await
@@ -2070,7 +2070,7 @@ async fn record_status(client: &mut TestClient, id: SessionId) -> Option<session
 async fn session_with_hook(
     client: &mut TestClient,
     name: &str,
-    hook: sessions::wire::primitives::WireLifecycleHook,
+    hook: boxes::wire::primitives::WireLifecycleHook,
 ) -> SessionId {
     use crate::test_harness::{create_session_req, unwrap_ready};
     use minimald_rpc::{
@@ -2087,10 +2087,10 @@ async fn session_with_hook(
         client
             .call::<ConfigureLoadout>(&ConfigureLoadoutRequest {
                 session_id: id,
-                contribution: sessions::wire::request::WireContribution {
-                    lifecycle_hooks: vec![sessions::wire::primitives::WireProvenancedHook {
+                contribution: boxes::wire::request::WireContribution {
+                    lifecycle_hooks: vec![boxes::wire::primitives::WireProvenancedHook {
                         hook,
-                        source: sessions::wire::primitives::WireSource::UserLoadout {
+                        source: boxes::wire::primitives::WireSource::UserLoadout {
                             name: "test".to_string(),
                         },
                     }],
@@ -2151,10 +2151,10 @@ async fn await_marker(marker: &std::path::Path) -> bool {
 #[test]
 fn only_uploaded_hook_scripts_gate_the_finalize() {
     use super::{Composition, composition_needs_staged_scripts};
-    use sessions::core::lifecyclehook::{HookScript, LifecycleHook};
-    use sessions::core::source::{ProvenancedHook, Source};
-    use sessions::wire::primitives::WireProvenancedHook;
-    use sessions::wire::request::{COMPOSITION_SNAPSHOT_VERSION, WireComposition};
+    use boxes::core::lifecyclehook::{HookScript, LifecycleHook};
+    use boxes::core::source::{ProvenancedHook, Source};
+    use boxes::wire::primitives::WireProvenancedHook;
+    use boxes::wire::request::{COMPOSITION_SNAPSHOT_VERSION, WireComposition};
 
     let composition_of = |hook: ProvenancedHook| {
         Composition::try_from(WireComposition {
@@ -2211,7 +2211,7 @@ async fn activation_runs_its_activate_hooks() {
     let session_id = session_with_hook(
         &mut client,
         "activate-hooks",
-        sessions::wire::primitives::WireLifecycleHook {
+        boxes::wire::primitives::WireLifecycleHook {
             on_activate: Some(inline(marker_body(&marker))),
             ..Default::default()
         },
@@ -2221,7 +2221,7 @@ async fn activation_runs_its_activate_hooks() {
     assert!(marker.exists(), "on_activate did not run");
     assert_eq!(
         record_status(&mut client, session_id).await,
-        Some(sessions::SessionStatus::Active),
+        Some(boxes::SessionStatus::Active),
         "a session whose activate hook succeeded should be attachable",
     );
 }
@@ -2251,12 +2251,10 @@ async fn activate_hook_output_reaches_the_client() {
         client
             .call::<ConfigureLoadout>(&ConfigureLoadoutRequest {
                 session_id: id,
-                contribution: contribution_with_hook(
-                    sessions::wire::primitives::WireLifecycleHook {
-                        on_activate: Some(inline("echo HOOK_SAID_HELLO".to_string())),
-                        ..Default::default()
-                    },
-                ),
+                contribution: contribution_with_hook(boxes::wire::primitives::WireLifecycleHook {
+                    on_activate: Some(inline("echo HOOK_SAID_HELLO".to_string())),
+                    ..Default::default()
+                }),
             })
             .await
             .unwrap(),
@@ -2460,7 +2458,7 @@ async fn a_hook_launched_shell_takes_the_attaching_terminals_term() {
     let session_id = session_with_hook(
         &mut client,
         "hook-then-attach",
-        sessions::wire::primitives::WireLifecycleHook {
+        boxes::wire::primitives::WireLifecycleHook {
             on_activate: Some(inline(marker_body(&marker))),
             ..Default::default()
         },
@@ -2512,12 +2510,10 @@ async fn a_failing_activate_hook_blocks_the_session() {
         client
             .call::<ConfigureLoadout>(&ConfigureLoadoutRequest {
                 session_id: id,
-                contribution: contribution_with_hook(
-                    sessions::wire::primitives::WireLifecycleHook {
-                        on_activate: Some(inline("echo ACTIVATE_SAID_NO >&2; exit 3".to_string())),
-                        ..Default::default()
-                    },
-                ),
+                contribution: contribution_with_hook(boxes::wire::primitives::WireLifecycleHook {
+                    on_activate: Some(inline("echo ACTIVATE_SAID_NO >&2; exit 3".to_string())),
+                    ..Default::default()
+                }),
             })
             .await
             .unwrap(),
@@ -2552,7 +2548,7 @@ async fn a_failing_activate_hook_blocks_the_session() {
     // The gate that matters: not attachable.
     assert_ne!(
         record_status(&mut client, id).await,
-        Some(sessions::SessionStatus::Active),
+        Some(boxes::SessionStatus::Active),
         "a session whose activate hook failed must not be attachable",
     );
 }
@@ -2582,7 +2578,7 @@ async fn destroy_runs_its_destroy_hooks_against_a_live_host() {
     let session_id = session_with_hook(
         &mut client,
         "destroy-hooks",
-        sessions::wire::primitives::WireLifecycleHook {
+        boxes::wire::primitives::WireLifecycleHook {
             on_destroy: Some(inline(marker_body(&marker))),
             ..Default::default()
         },
@@ -2631,7 +2627,7 @@ async fn destroy_runs_its_hooks_after_the_session_shell_has_exited() {
     let session_id = session_with_hook(
         &mut client,
         "destroy-after-exit",
-        sessions::wire::primitives::WireLifecycleHook {
+        boxes::wire::primitives::WireLifecycleHook {
             on_destroy: Some(inline(marker_body(&marker))),
             ..Default::default()
         },
@@ -2691,7 +2687,7 @@ async fn destroy_runs_its_hooks_for_a_session_that_was_never_attached() {
     let session_id = session_with_hook(
         &mut client,
         "destroy-never-attached",
-        sessions::wire::primitives::WireLifecycleHook {
+        boxes::wire::primitives::WireLifecycleHook {
             on_destroy: Some(inline(marker_body(&marker))),
             ..Default::default()
         },
@@ -2720,7 +2716,7 @@ async fn a_failing_destroy_hook_still_destroys_the_session() {
     let session_id = session_with_hook(
         &mut client,
         "destroy-hook-fails",
-        sessions::wire::primitives::WireLifecycleHook {
+        boxes::wire::primitives::WireLifecycleHook {
             on_destroy: Some(inline(format!("{}; exit 3", marker_body(&marker)))),
             ..Default::default()
         },
@@ -2764,7 +2760,7 @@ async fn detach_runs_its_detach_hooks_after_the_shell_exits() {
     let session_id = session_with_hook(
         &mut client,
         "detach-hooks",
-        sessions::wire::primitives::WireLifecycleHook {
+        boxes::wire::primitives::WireLifecycleHook {
             on_detach: Some(inline(marker_body(&marker))),
             ..Default::default()
         },
@@ -2818,7 +2814,7 @@ async fn a_session_with_no_destroy_hook_runs_nothing_on_destroy() {
     let session_id = session_with_hook(
         &mut client,
         "no-destroy-hook",
-        sessions::wire::primitives::WireLifecycleHook {
+        boxes::wire::primitives::WireLifecycleHook {
             on_attach: Some(inline(marker_body(&marker))),
             ..Default::default()
         },
@@ -2847,10 +2843,10 @@ async fn a_session_with_no_destroy_hook_runs_nothing_on_destroy() {
 async fn materializing_patches_carries_their_modes_into_the_home() {
     use std::os::unix::fs::PermissionsExt as _;
 
+    use boxes::core::compose::Composition;
+    use boxes::wire::primitives::{WireResolvedPatch, WireSessionPatch, WireSource};
+    use boxes::wire::request::{COMPOSITION_SNAPSHOT_VERSION, WireComposition};
     use paths::{DaemonAbsPath, HostAbsPath, SandboxRelPath};
-    use sessions::core::compose::Composition;
-    use sessions::wire::primitives::{WireResolvedPatch, WireSessionPatch, WireSource};
-    use sessions::wire::request::{COMPOSITION_SNAPSHOT_VERSION, WireComposition};
 
     let tmp = tempfile::tempdir().unwrap();
     let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
@@ -2987,7 +2983,7 @@ async fn box_survives_without_client() {
 
     assert_eq!(
         record_status(&mut fresh, session_id).await,
-        Some(sessions::SessionStatus::Active),
+        Some(boxes::SessionStatus::Active),
         "a box that outlived its client is still an Active record",
     );
 }
@@ -3057,7 +3053,7 @@ async fn abrupt_client_loss_keeps_task() {
 
     assert_eq!(
         record_status(&mut fresh, session_id).await,
-        Some(sessions::SessionStatus::Active),
+        Some(boxes::SessionStatus::Active),
     );
 
     use minimald_rpc::{Shutdown, ShutdownRequest};
@@ -3142,7 +3138,7 @@ async fn box_has_no_idle_stop() {
     );
     assert_eq!(
         record_status(&mut server.connect().await, session_id).await,
-        Some(sessions::SessionStatus::Active),
+        Some(boxes::SessionStatus::Active),
     );
 
     // And none of the stop paths' lines is in the log for this session.
@@ -3170,7 +3166,7 @@ async fn box_has_no_idle_stop() {
 
 /// An Ethernet II frame carrying an IPv4 packet to `dst` under `proto`, with
 /// `dst_port` where the L4 header has one — the shape
-/// [`sessions::core::egress::summarize`] extracts a verdict's inputs from.
+/// [`boxes::core::egress::summarize`] extracts a verdict's inputs from.
 /// Everything the verdict reads is filled in; the unread fields are zeroes.
 fn ipv4_frame(proto: u8, dst: [u8; 4], dst_port: u16) -> Vec<u8> {
     let mut f = Vec::new();
@@ -3208,8 +3204,8 @@ fn ipv4_frame(proto: u8, dst: [u8; 4], dst_port: u16) -> Vec<u8> {
 /// say why the box reaches what it does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn own_ip_default_deny_all() {
+    use boxes::core::egress::{EgressRules, FrameVerdict};
     use minimald_rpc::{CreateSession, CreateSessionRequest};
-    use sessions::core::egress::{EgressRules, FrameVerdict};
 
     // The address of the resolver Minimal owns for a box: the switch
     // gateway, as the relay hands it to the gate.
@@ -3218,28 +3214,28 @@ async fn own_ip_default_deny_all() {
     let external = [93, 184, 216, 34];
     // The box's lease — the source address `ipv4_frame` writes, so the
     // verdicts below turn on the egress dimension alone. The lease check
-    // itself (NET-084) is proven in `sessions::core::egress`.
+    // itself (NET-084) is proven in `boxes::core::egress`.
     let lease = [10, 0, 0, 5];
 
     assert_eq!(
-        sessions::EGRESS_DEFAULT_PHASE,
-        sessions::EgressDefaultPhase::InForce,
+        boxes::EGRESS_DEFAULT_PHASE,
+        boxes::EgressDefaultPhase::InForce,
         "this build ships the deny-all default in force (NET-074)",
     );
 
     // The launcher's resolution for an own-address box that declared
     // nothing, once the default is in force: the deny-all section, egress
     // only touched, ingress kept.
-    let declared = sessions::SessionPolicy::default();
+    let declared = boxes::SessionPolicy::default();
     let effective = super::effective_session_policy(
         &declared,
-        sessions::NetworkMode::OwnIp,
-        sessions::EgressDefaultPhase::InForce,
+        boxes::NetworkMode::OwnIp,
+        boxes::EgressDefaultPhase::InForce,
         false,
     );
     assert_eq!(
         effective.egress,
-        Some(sessions::EgressPolicy::deny_all()),
+        Some(boxes::EgressPolicy::deny_all()),
         "the gate's egress for an absent section is the deny-all section",
     );
     assert_eq!(effective.ingress, None);
@@ -3250,8 +3246,8 @@ async fn own_ip_default_deny_all() {
     // other port on the resolver slips through.
     let rules = EgressRules::from_policy(effective.egress.as_ref(), resolver, lease);
     let verdict_on = |proto: u8, dst: [u8; 4], port: u16| {
-        sessions::core::egress::verdict(
-            &sessions::core::egress::summarize(&ipv4_frame(proto, dst, port)),
+        boxes::core::egress::verdict(
+            &boxes::core::egress::summarize(&ipv4_frame(proto, dst, port)),
             &rules,
         )
     };
@@ -3290,8 +3286,8 @@ async fn own_ip_default_deny_all() {
             config: minimald_rpc::SessionConfig {
                 name: Some("own-ip-bare".to_string()),
                 project_path: paths::HostAbsPath::try_new("/uwu").unwrap(),
-                network: sessions::NetworkMode::OwnIp,
-                policy: sessions::SessionPolicy::default(),
+                network: boxes::NetworkMode::OwnIp,
+                policy: boxes::SessionPolicy::default(),
                 task_addresses: Vec::new(),
                 box_id: None,
                 box_addresses: None,
@@ -3308,14 +3304,14 @@ async fn own_ip_default_deny_all() {
         .find(|line| line.contains("session starts") && line.contains("own-ip-bare"))
         .unwrap_or_else(|| panic!("the session start must be logged, got: {logged}"));
     for fact in [
-        format!("egress_default_phase={:?}", sessions::EGRESS_DEFAULT_PHASE),
+        format!("egress_default_phase={:?}", boxes::EGRESS_DEFAULT_PHASE),
         "deny_all_opt_out=false".to_string(),
         format!(
             "effective_egress={:?}",
-            sessions::effective_egress(
+            boxes::effective_egress(
                 None,
-                sessions::NetworkMode::OwnIp,
-                sessions::EGRESS_DEFAULT_PHASE,
+                boxes::NetworkMode::OwnIp,
+                boxes::EGRESS_DEFAULT_PHASE,
                 false
             )
         ),
@@ -3339,14 +3335,14 @@ fn own_ip_session_req(name: &str) -> minimald_rpc::CreateSessionRequest {
         config: minimald_rpc::SessionConfig {
             name: Some(name.to_string()),
             project_path: paths::HostAbsPath::try_new("/uwu").unwrap(),
-            network: sessions::NetworkMode::OwnIp,
-            policy: sessions::SessionPolicy {
+            network: boxes::NetworkMode::OwnIp,
+            policy: boxes::SessionPolicy {
                 egress: None,
-                ingress: Some(sessions::IngressPolicy {
-                    port_mappings: vec![sessions::PortMapping {
+                ingress: Some(boxes::IngressPolicy {
+                    port_mappings: vec![boxes::PortMapping {
                         external_port: 18080,
                         internal_port: 80,
-                        proto: sessions::IpProto::Tcp,
+                        proto: boxes::IpProto::Tcp,
                     }],
                     ..Default::default()
                 }),
@@ -3373,7 +3369,7 @@ fn own_ip_handed_session_req(
     loopback: std::net::Ipv4Addr,
 ) -> minimald_rpc::CreateSessionRequest {
     let mut request = own_ip_session_req(name);
-    request.config.box_addresses = Some(sessions::BoxAddresses {
+    request.config.box_addresses = Some(boxes::BoxAddresses {
         switch_address: switch,
         loopback_address: loopback,
     });
@@ -3528,7 +3524,7 @@ async fn zone_answer_for(server: &TestServer, name: &str) -> Option<(String, std
 /// the one definition the allocator carves rather than restated as literals —
 /// so the assertion below follows the range if the design moves it again.
 fn in_reserved_local_range(addr: std::net::Ipv4Addr) -> bool {
-    let (network, prefix) = sessions::core::loopback::RESERVED_LOCAL_RANGE;
+    let (network, prefix) = boxes::core::loopback::RESERVED_LOCAL_RANGE;
     let mask = u32::MAX << (32 - u32::from(prefix));
     u32::from(network) & mask == u32::from(addr) & mask
 }
@@ -3623,7 +3619,7 @@ async fn a_box_nobody_handed_an_address_publishes_at_the_answerers_grant() {
     assert_eq!(owner, "web", "the session owns its box name");
     assert_eq!(
         address,
-        sessions::core::loopback::POOL_FIRST,
+        boxes::core::loopback::POOL_FIRST,
         "an empty record's first grant is the pool's first address, got {address}"
     );
     assert!(
@@ -3754,7 +3750,7 @@ async fn a_session_start_reports_a_publish_no_grant_names() {
     // The range's last address: inside the reserved slice, so nothing rules
     // it out on shape, and not one this daemon's empty record has named — a
     // second root's publish, as the kernel's socket table sees it.
-    let foreign = sessions::core::loopback::POOL_LAST;
+    let foreign = boxes::core::loopback::POOL_LAST;
     let _listener = std::net::TcpListener::bind((foreign, 0))
         .unwrap_or_else(|error| panic!("the unrecorded address binds: {error}"));
 
@@ -3897,7 +3893,7 @@ async fn create_handed_own_ip_session_with_hook(
     name: &str,
     switch: std::net::Ipv4Addr,
     loopback: std::net::Ipv4Addr,
-    hook: sessions::wire::primitives::WireLifecycleHook,
+    hook: boxes::wire::primitives::WireLifecycleHook,
 ) -> SessionId {
     use minimald_rpc::{ConfigureLoadout, ConfigureLoadoutRequest, CreateSession};
     let id = client
@@ -3938,7 +3934,7 @@ async fn an_activate_hook_launch_finds_the_box_s_address_already_published() {
         "hooked-web",
         std::net::Ipv4Addr::new(100, 64, 128, 21),
         handed,
-        sessions::wire::primitives::WireLifecycleHook {
+        boxes::wire::primitives::WireLifecycleHook {
             on_activate: Some(inline(marker_body(&marker))),
             ..Default::default()
         },
@@ -3961,7 +3957,7 @@ async fn an_activate_hook_launch_finds_the_box_s_address_already_published() {
     );
     assert_eq!(
         record_status(&mut client, id).await,
-        Some(sessions::SessionStatus::Active),
+        Some(boxes::SessionStatus::Active),
         "a box with ingress and an activate hook activates"
     );
     let (owner, address) = zone_answer_for(&server, "hooked-web.min.internal")
@@ -4069,7 +4065,7 @@ async fn a_detach_hook_host_of_a_registered_box_is_refused_to_the_next_attach() 
         "hooked-detach",
         std::net::Ipv4Addr::new(100, 64, 128, 24),
         std::net::Ipv4Addr::new(127, 0, 64, 24),
-        sessions::wire::primitives::WireLifecycleHook {
+        boxes::wire::primitives::WireLifecycleHook {
             on_detach: Some(inline(marker_body(&marker))),
             ..Default::default()
         },
@@ -4474,7 +4470,7 @@ async fn a_restarted_registered_box_whose_row_was_bound_refuses_the_attach() {
         .unwrap()
         .expect("the box resolves after the restart");
     let record = handle.record().await.expect("the record reads back");
-    assert_eq!(record.status, sessions::SessionStatus::Active);
+    assert_eq!(record.status, boxes::SessionStatus::Active);
     assert!(record.host_row_bound, "the binding survives the restart");
 
     assert_attach_refused_rowless(&mut client, id).await;
@@ -4557,7 +4553,7 @@ async fn a_failed_activate_hook_s_publish_is_withdrawn_by_the_destroy() {
         "hooked-fails",
         std::net::Ipv4Addr::new(100, 64, 128, 22),
         handed,
-        sessions::wire::primitives::WireLifecycleHook {
+        boxes::wire::primitives::WireLifecycleHook {
             on_activate: Some(inline("exit 3".to_string())),
             ..Default::default()
         },
@@ -4575,7 +4571,7 @@ async fn a_failed_activate_hook_s_publish_is_withdrawn_by_the_destroy() {
     }
     assert_ne!(
         record_status(&mut client, id).await,
-        Some(sessions::SessionStatus::Active),
+        Some(boxes::SessionStatus::Active),
         "a box whose activate hook failed is not promoted"
     );
 
@@ -6974,10 +6970,10 @@ async fn a_destroyed_holders_shared_port_is_bound_for_the_running_box_that_takes
         "the hand-over binds the new holder's forward: {requests:?}"
     );
     let declared = crate::net::policy::expose_request(
-        &sessions::PortMapping {
+        &boxes::PortMapping {
             external_port: 18080,
             internal_port: 80,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
         },
         published,
         std::net::Ipv4Addr::new(100, 64, 128, 10),
@@ -7384,7 +7380,7 @@ pub(crate) fn dynamic_ingress_session_req(
     name: &str,
     switch: std::net::Ipv4Addr,
     loopback: std::net::Ipv4Addr,
-    mode: Option<sessions::DynamicIngress>,
+    mode: Option<boxes::DynamicIngress>,
     range: Option<(u16, u16)>,
 ) -> minimald_rpc::CreateSessionRequest {
     let mut request = own_ip_session_req(name);
@@ -7397,7 +7393,7 @@ pub(crate) fn dynamic_ingress_session_req(
     ingress.port_mappings.clear();
     ingress.dynamic_ingress = mode;
     ingress.dynamic_allowed_range = range;
-    request.config.box_addresses = Some(sessions::BoxAddresses {
+    request.config.box_addresses = Some(boxes::BoxAddresses {
         switch_address: switch,
         loopback_address: loopback,
     });
@@ -7411,7 +7407,7 @@ pub(crate) async fn finalize_dynamic_ingress_session(
     name: &str,
     switch: std::net::Ipv4Addr,
     loopback: std::net::Ipv4Addr,
-    mode: Option<sessions::DynamicIngress>,
+    mode: Option<boxes::DynamicIngress>,
     range: Option<(u16, u16)>,
 ) -> SessionId {
     use minimald_rpc::{ConfigureLoadout, ConfigureLoadoutRequest, CreateSession};
@@ -7455,14 +7451,14 @@ fn declared_and_dynamic_ingress_session_req(
         .ingress
         .as_mut()
         .expect("own_ip_session_req always declares an ingress policy");
-    ingress.port_mappings = vec![sessions::PortMapping {
+    ingress.port_mappings = vec![boxes::PortMapping {
         external_port: 3000,
         internal_port: 3000,
-        proto: sessions::IpProto::Tcp,
+        proto: boxes::IpProto::Tcp,
     }];
-    ingress.dynamic_ingress = Some(sessions::DynamicIngress::Allow);
+    ingress.dynamic_ingress = Some(boxes::DynamicIngress::Allow);
     ingress.dynamic_allowed_range = Some((3000, 3999));
-    request.config.box_addresses = Some(sessions::BoxAddresses {
+    request.config.box_addresses = Some(boxes::BoxAddresses {
         switch_address: switch,
         loopback_address: loopback,
     });
@@ -7757,7 +7753,7 @@ async fn create_logs_dynamic_ingress() {
             "dyn-allow-logged",
             std::net::Ipv4Addr::new(100, 64, 128, 31),
             std::net::Ipv4Addr::new(127, 0, 64, 31),
-            Some(sessions::DynamicIngress::Allow),
+            Some(boxes::DynamicIngress::Allow),
             Some((3000, 3999)),
         ))
         .await
@@ -7767,8 +7763,8 @@ async fn create_logs_dynamic_ingress() {
             config: minimald_rpc::SessionConfig {
                 name: Some("dyn-bare-logged".to_string()),
                 project_path: paths::HostAbsPath::try_new("/uwu").unwrap(),
-                network: sessions::NetworkMode::OwnIp,
-                policy: sessions::SessionPolicy::default(),
+                network: boxes::NetworkMode::OwnIp,
+                policy: boxes::SessionPolicy::default(),
                 task_addresses: Vec::new(),
                 box_id: None,
                 box_addresses: None,
@@ -7831,7 +7827,7 @@ async fn expose_unenrolled_local_rpc_evaluates_dynamic_ingress() {
         "web",
         std::net::Ipv4Addr::new(100, 64, 128, 21),
         std::net::Ipv4Addr::new(127, 0, 64, 21),
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -7899,10 +7895,10 @@ async fn expose_unenrolled_local_rpc_evaluates_dynamic_ingress() {
         "the publish rides the forwarder's expose verb: {served:?}"
     );
     let declared = crate::net::policy::expose_request(
-        &sessions::PortMapping {
+        &boxes::PortMapping {
             external_port: 3000,
             internal_port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
         },
         std::net::Ipv4Addr::new(127, 0, 64, 21),
         std::net::Ipv4Addr::new(100, 64, 128, 21),
@@ -7938,7 +7934,7 @@ async fn expose_allow_publishes_and_lists() {
         "listweb",
         std::net::Ipv4Addr::new(100, 64, 128, 21),
         std::net::Ipv4Addr::new(127, 0, 64, 21),
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -7967,7 +7963,7 @@ async fn expose_allow_publishes_and_lists() {
     let expected = minimald_rpc::LiveMapping {
         local: "127.0.64.21:3000".to_string(),
         internal_port: 3000,
-        proto: sessions::IpProto::Tcp,
+        proto: boxes::IpProto::Tcp,
         pending: Some(false),
     };
     assert_eq!(
@@ -8057,7 +8053,7 @@ async fn expose_allow_admits_the_port_at_the_box_gate_until_stop() {
         "gateweb",
         switch,
         std::net::Ipv4Addr::new(127, 0, 64, 91),
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -8073,7 +8069,7 @@ async fn expose_allow_admits_the_port_at_the_box_gate_until_stop() {
     let gate = std::sync::Arc::new(crate::net::switch::SessionGate::for_session(
         "gateweb".to_string(),
         switch,
-        &sessions::SessionPolicy::default(),
+        &boxes::SessionPolicy::default(),
         crate::net::SwitchSubnet::default(),
         None,
     ));
@@ -8201,7 +8197,7 @@ async fn vm_backed_expose_reports_admission_to_host() {
         "vmrepweb",
         std::net::Ipv4Addr::new(100, 64, 128, 21),
         std::net::Ipv4Addr::new(127, 0, 64, 21),
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -8252,7 +8248,7 @@ async fn vm_backed_expose_reports_admission_to_host() {
         minimald_rpc::BoxControlRequest::AdmitPort(minimald_rpc::AdmitPortRequest {
             switch_address: std::net::Ipv4Addr::new(100, 64, 128, 21),
             port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
             source: minimald_rpc::PortReportSource::Expose,
         }),
         "the report carries the row's own key, the port, the protocol and the \
@@ -8264,7 +8260,7 @@ async fn vm_backed_expose_reports_admission_to_host() {
     replies
         .send(minimald_rpc::BoxControlReply::PortRecorded {
             port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
         })
         .expect("the report door stand-in lives");
     let mapping = expose
@@ -8276,7 +8272,7 @@ async fn vm_backed_expose_reports_admission_to_host() {
         minimald_rpc::LiveMapping {
             local: "127.0.64.21:3000".to_string(),
             internal_port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
             pending: Some(false),
         },
         "the caller hears the mapping the host vouched for"
@@ -8320,7 +8316,7 @@ async fn refused_admission_report_leaves_no_partial_mapping() {
         "vmrefweb",
         std::net::Ipv4Addr::new(100, 64, 128, 21),
         std::net::Ipv4Addr::new(127, 0, 64, 21),
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -8358,7 +8354,7 @@ async fn refused_admission_report_leaves_no_partial_mapping() {
         minimald_rpc::BoxControlRequest::AdmitPort(minimald_rpc::AdmitPortRequest {
             switch_address: std::net::Ipv4Addr::new(100, 64, 128, 21),
             port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
             source: minimald_rpc::PortReportSource::Expose,
         }),
         "the refused report is the same shape an admitted one is: the row's \
@@ -8421,7 +8417,7 @@ async fn refused_admission_report_leaves_no_partial_mapping() {
         minimald_rpc::BoxControlRequest::AdmitPort(minimald_rpc::AdmitPortRequest {
             switch_address: std::net::Ipv4Addr::new(100, 64, 128, 21),
             port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
             source: minimald_rpc::PortReportSource::Expose,
         }),
         "the port the refusal unwound is publishable again: the set gave it back"
@@ -8429,7 +8425,7 @@ async fn refused_admission_report_leaves_no_partial_mapping() {
     replies
         .send(minimald_rpc::BoxControlReply::PortRecorded {
             port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
         })
         .expect("the report door stand-in lives");
     expose
@@ -8482,7 +8478,7 @@ async fn refused_admission_report_leaves_no_partial_mapping() {
 async fn finalize_self_allocated_dynamic_ingress_session(
     client: &mut TestClient,
     name: &str,
-    mode: Option<sessions::DynamicIngress>,
+    mode: Option<boxes::DynamicIngress>,
     range: Option<(u16, u16)>,
 ) -> SessionId {
     use minimald_rpc::{ConfigureLoadout, ConfigureLoadoutRequest, CreateSession};
@@ -8522,7 +8518,7 @@ async fn expose_self_allocated_box_publishes_at_its_registered_address() {
     let web = finalize_self_allocated_dynamic_ingress_session(
         &mut client,
         "selfweb",
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -8570,7 +8566,7 @@ async fn expose_self_allocated_box_publishes_at_its_registered_address() {
         minimald_rpc::LiveMapping {
             local: format!("{published}:3000"),
             internal_port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
             pending: Some(false),
         },
         "the mapping names the box's registered address at its own port number"
@@ -8588,10 +8584,10 @@ async fn expose_self_allocated_box_publishes_at_its_registered_address() {
         "the publish rides the forwarder's expose verb: {served:?}"
     );
     let declared = crate::net::policy::expose_request(
-        &sessions::PortMapping {
+        &boxes::PortMapping {
             external_port: 3000,
             internal_port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
         },
         published,
         lease,
@@ -8633,7 +8629,7 @@ async fn expose_self_allocated_box_without_a_registered_address_is_refused() {
     let web = finalize_self_allocated_dynamic_ingress_session(
         &mut client,
         "selfweb",
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -8720,7 +8716,7 @@ async fn expose_deny_typed_error() {
         "denyclosed",
         std::net::Ipv4Addr::new(100, 64, 128, 31),
         std::net::Ipv4Addr::new(127, 0, 64, 31),
-        Some(sessions::DynamicIngress::Deny),
+        Some(boxes::DynamicIngress::Deny),
         Some((3000, 3999)),
     )
     .await;
@@ -8835,7 +8831,7 @@ async fn expose_host_address_answers_before_the_stance() {
         .unwrap()
         .expect("the host-address box resolves");
     let record = handle.record().await.expect("the record reads");
-    assert_eq!(record.network, sessions::NetworkMode::HostNet);
+    assert_eq!(record.network, boxes::NetworkMode::HostNet);
 
     match handle.expose_dynamic(3001).await {
         Err(crate::net::policy::ExposeFailure::Refused(
@@ -8893,7 +8889,7 @@ async fn expose_rejected_leaves_no_partial_mapping() {
         "web",
         std::net::Ipv4Addr::new(100, 64, 128, 23),
         std::net::Ipv4Addr::new(127, 0, 64, 23),
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -9020,7 +9016,7 @@ async fn expose_colliding_on_shared_address_is_a_bind_error() {
         "clashweb",
         std::net::Ipv4Addr::new(100, 64, 128, 31),
         std::net::Ipv4Addr::new(127, 0, 64, 31),
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -9029,7 +9025,7 @@ async fn expose_colliding_on_shared_address_is_a_bind_error() {
         "clashdb",
         std::net::Ipv4Addr::new(100, 64, 128, 32),
         std::net::Ipv4Addr::new(127, 0, 64, 32),
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -9107,10 +9103,10 @@ async fn expose_colliding_on_shared_address_is_a_bind_error() {
         "the colliding publish rides the forwarder's expose verb: {served:?}"
     );
     let colliding = crate::net::policy::expose_request(
-        &sessions::PortMapping {
+        &boxes::PortMapping {
             external_port: 3000,
             internal_port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
         },
         std::net::Ipv4Addr::LOCALHOST,
         std::net::Ipv4Addr::new(100, 64, 128, 32),
@@ -9140,7 +9136,7 @@ async fn expose_colliding_on_shared_address_is_a_bind_error() {
         minimald_rpc::Errorable::Ok(vec![minimald_rpc::LiveMapping {
             local: "127.0.0.1:3000".to_string(),
             internal_port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
             // The publish admitted the port at the box's relay gate
             // (NET-044), so the row is never pending.
             pending: Some(false),
@@ -9188,7 +9184,7 @@ async fn expose_publishes_at_the_registered_address() {
         "web",
         std::net::Ipv4Addr::new(100, 64, 128, 9),
         std::net::Ipv4Addr::new(127, 0, 64, 9),
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -9243,10 +9239,10 @@ async fn expose_publishes_at_the_registered_address() {
         "the publish rides the forwarder's expose verb: {served:?}"
     );
     let declared = crate::net::policy::expose_request(
-        &sessions::PortMapping {
+        &boxes::PortMapping {
             external_port: 3000,
             internal_port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
         },
         std::net::Ipv4Addr::LOCALHOST,
         std::net::Ipv4Addr::new(100, 64, 128, 9),
@@ -9270,7 +9266,7 @@ async fn expose_publishes_at_the_registered_address() {
         minimald_rpc::Errorable::Ok(vec![minimald_rpc::LiveMapping {
             local: "127.0.0.1:3000".to_string(),
             internal_port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
             // The publish admitted the port at the box's relay gate
             // (NET-044), so the row is never pending.
             pending: Some(false),
@@ -9300,7 +9296,7 @@ async fn expose_on_stopped_box_refused() {
         "stopweb",
         std::net::Ipv4Addr::new(100, 64, 128, 9),
         std::net::Ipv4Addr::new(127, 0, 64, 9),
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -9387,7 +9383,7 @@ async fn expose_without_published_address_is_not_a_policy_deny() {
         // lines ride one buffer, so the assertion below finds the refusal
         // by the box it names.
         "nopubweb",
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -9482,7 +9478,7 @@ async fn expose_logs_every_path() {
         "pathweb",
         std::net::Ipv4Addr::new(100, 64, 128, 25),
         std::net::Ipv4Addr::new(127, 0, 64, 25),
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -9553,7 +9549,7 @@ async fn expose_logs_every_path() {
         "pathbroken",
         std::net::Ipv4Addr::new(100, 64, 128, 27),
         std::net::Ipv4Addr::new(127, 0, 64, 27),
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -9663,13 +9659,13 @@ async fn expose_logs_every_path() {
 /// The ingress policy a seeded listen plan's gate is built over: the same
 /// shape the box's record carries — allow, over `range`, declaring nothing
 /// — so the watcher's verdicts are the box's own.
-fn listen_policy_over(range: (u16, u16)) -> sessions::SessionPolicy {
-    sessions::SessionPolicy::new(
+fn listen_policy_over(range: (u16, u16)) -> boxes::SessionPolicy {
+    boxes::SessionPolicy::new(
         None,
-        Some(sessions::IngressPolicy {
+        Some(boxes::IngressPolicy {
             port_mappings: vec![],
             dynamic_allowed_range: Some(range),
-            dynamic_ingress: Some(sessions::DynamicIngress::Allow),
+            dynamic_ingress: Some(boxes::DynamicIngress::Allow),
         }),
     )
 }
@@ -9812,7 +9808,7 @@ async fn box_with_scripted_plan(
     std::sync::Arc<crate::net::switch::SessionGate>,
     std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     tokio::sync::watch::Sender<u64>,
-    sessions::SessionId,
+    boxes::SessionId,
 ) {
     // The hand vouched for, so the registry publishes the loopback hand's
     // address: both surfaces' forwards bind at the address the box's name
@@ -9824,7 +9820,7 @@ async fn box_with_scripted_plan(
             name,
             switch,
             loopback,
-            Some(sessions::DynamicIngress::Allow),
+            Some(boxes::DynamicIngress::Allow),
             Some(range),
         )
         .await
@@ -9832,7 +9828,7 @@ async fn box_with_scripted_plan(
         let id = finalize_self_allocated_dynamic_ingress_session(
             client,
             name,
-            Some(sessions::DynamicIngress::Allow),
+            Some(boxes::DynamicIngress::Allow),
             Some(range),
         )
         .await;
@@ -10034,7 +10030,7 @@ async fn listen_publish_and_runtime_expose_never_double_bind() {
         minimald_rpc::LiveMapping {
             local: format!("{loopback}:{exposed_port}"),
             internal_port: exposed_port,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
             pending: Some(false),
         },
         "the expose binds where the box's watcher binds, at its own port number"
@@ -10058,7 +10054,7 @@ async fn listen_publish_and_runtime_expose_never_double_bind() {
         vec![&minimald_rpc::LiveMapping {
             local: format!("{loopback}:{listen_port}"),
             internal_port: listen_port,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
             pending: Some(false),
         }],
         "the listen publication is listed once as the box's live ingress: {rows:?}"
@@ -10286,7 +10282,7 @@ async fn expose_on_listen_published_port_is_already_published() {
             listened: vec![minimald_rpc::LiveMapping {
                 local: format!("{loopback}:{port}"),
                 internal_port: port,
-                proto: sessions::IpProto::Tcp,
+                proto: boxes::IpProto::Tcp,
                 pending: Some(false),
             }],
             unaudited_listen_ports: Vec::new(),
@@ -10363,7 +10359,7 @@ async fn listen_publication_is_listed_and_audited() {
     let row = minimald_rpc::LiveMapping {
         local: format!("{loopback}:{port}"),
         internal_port: port,
-        proto: sessions::IpProto::Tcp,
+        proto: boxes::IpProto::Tcp,
         pending: Some(false),
     };
     let listed: minimald_rpc::Errorable<Vec<minimald_rpc::LiveMapping>> = client
@@ -10642,7 +10638,7 @@ async fn listen_plan_travels_in_launched() {
         "ownbare",
         std::net::Ipv4Addr::new(100, 64, 128, 75),
         std::net::Ipv4Addr::new(127, 0, 64, 75),
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((seeded_port.min(bare_port), seeded_port.max(bare_port))),
     )
     .await;
@@ -11514,7 +11510,7 @@ async fn vm_backed_allow_box(name: &str, octet: u8, status: u16) -> VmBackedBox 
         name,
         std::net::Ipv4Addr::new(100, 64, 128, octet),
         std::net::Ipv4Addr::new(127, 0, 64, octet),
-        Some(sessions::DynamicIngress::Allow),
+        Some(boxes::DynamicIngress::Allow),
         Some((3000, 3999)),
     )
     .await;
@@ -11589,7 +11585,7 @@ async fn bind_failure_withdraws_the_admitted_report() {
     replies
         .send(minimald_rpc::BoxControlReply::PortRecorded {
             port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
         })
         .expect("the report door stand-in lives");
     let withdrawal = next_report(&mut reports).await;
@@ -11598,7 +11594,7 @@ async fn bind_failure_withdraws_the_admitted_report() {
         minimald_rpc::BoxControlRequest::WithdrawPort(minimald_rpc::WithdrawPortRequest {
             switch_address: std::net::Ipv4Addr::new(100, 64, 128, 23),
             port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
             source: minimald_rpc::PortReportSource::Expose,
         }),
         "a bind that failed gives the host's admission back"
@@ -11620,7 +11616,7 @@ async fn bind_failure_withdraws_the_admitted_report() {
     replies
         .send(minimald_rpc::BoxControlReply::PortRecorded {
             port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
         })
         .expect("the report door stand-in lives");
     assert!(
@@ -11663,7 +11659,7 @@ async fn stop_unexposes_before_withdrawing_the_report() {
     replies
         .send(minimald_rpc::BoxControlReply::PortRecorded {
             port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
         })
         .expect("the report door stand-in lives");
     expose
@@ -11696,7 +11692,7 @@ async fn stop_unexposes_before_withdrawing_the_report() {
     replies
         .send(minimald_rpc::BoxControlReply::PortRecorded {
             port: 3000,
-            proto: sessions::IpProto::Tcp,
+            proto: boxes::IpProto::Tcp,
         })
         .expect("the report door stand-in lives");
     tokio::time::timeout(Duration::from_secs(30), stop)
@@ -11752,7 +11748,7 @@ async fn a_hook_launched_shell_of_a_registered_box_is_kept_for_a_terminal() {
         "hooked-kept",
         std::net::Ipv4Addr::new(100, 64, 128, 23),
         std::net::Ipv4Addr::new(127, 0, 64, 23),
-        sessions::wire::primitives::WireLifecycleHook {
+        boxes::wire::primitives::WireLifecycleHook {
             on_activate: Some(inline(marker_body(&marker))),
             ..Default::default()
         },

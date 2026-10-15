@@ -11,7 +11,7 @@ The crates fall into two groups:
   Declarative evaluation (`mfile`, `decode`, `checkouts`, `stdlib`), the
   dependency graph and build machinery (`graph`, `orchestrator`, `sandbox`,
   `lcache`, `rcache`, `op`), and the session/composition primitives
-  (`sessions`, `switch`). They expose no stable external interface; they exist
+  (`boxes`, `switch`). They expose no stable external interface; they exist
   to be wired together.
 - **Product-surface crates**: typically the binaries, give users a stable
   interface: `mip` (the package/build CLI), `min` (the session CLI), `minimald`
@@ -84,8 +84,8 @@ contributions and routes anything needing approval back to the client; the
 client gates those pending items and returns verdicts; the daemon assembles the
 final `Composition` (vars, file patches, packages, lifecycle hooks) for the
 apply layer. User policy is enforced only on the client; the daemon never runs
-it. The **sessions** crate holds these primitives; the full data flow is
-documented in [Sessions composition](internal/sessions-composition.md) (source: `crates/sessions/docs/COMPOSITION.md`).
+it. The **boxes** crate holds these primitives. [Sessions composition](internal/sessions-composition.md)
+documents the full data flow (source: `crates/boxes/docs/COMPOSITION.md`).
 
 ### VM internals
 
@@ -207,7 +207,7 @@ execution:
 and inside the microVM:
 
 `async-dialog`, `minimal`, `minimal-client`, `minimald`,
-`minimald-rpc`, `minvmd`, `sessions`, `switch`
+`minimald-rpc`, `minvmd`, `boxes`, `switch`
 
 **shared** covers the utilities the other planes draw on:
 

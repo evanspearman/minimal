@@ -11,7 +11,7 @@
 //!
 //! * **publishes** each new listening port the shared verdict permits
 //!   ([`SessionGate::listen_verdict`], the pure decision in
-//!   `sessions::core::egress` the Kani harness exhausts): a forward bound at
+//!   `boxes::core::egress` the Kani harness exhausts): a forward bound at
 //!   the box's own address, at the port the process listens on — no
 //!   translation, the same number on both sides, exactly as a declaration's
 //!   mapping publishes its external port (NET-010) — and the port admitted
@@ -131,8 +131,8 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
-use sessions::IpProto;
-use sessions::core::egress::ListenVerdict;
+use boxes::IpProto;
+use boxes::core::egress::ListenVerdict;
 
 use super::policy::{ControlChannel, ExposedMapping, expose_mapping, unexpose_mapping};
 use super::switch::SessionGate;
@@ -2045,21 +2045,21 @@ impl WatchState {
             ListenVerdict::Declared => Appearance::Settled,
             ListenVerdict::Deny => {
                 let reason = match self.plan.gate.dynamic_verdict(port) {
-                    sessions::core::egress::DynamicPortVerdict::Deny => {
+                    boxes::core::egress::DynamicPortVerdict::Deny => {
                         "the box's dynamic ingress stance is deny".to_string()
                     }
-                    sessions::core::egress::DynamicPortVerdict::Ask => {
+                    boxes::core::egress::DynamicPortVerdict::Ask => {
                         "the box's dynamic ingress stance is ask; a listen cannot answer it"
                             .to_string()
                     }
-                    sessions::core::egress::DynamicPortVerdict::NoRange => {
+                    boxes::core::egress::DynamicPortVerdict::NoRange => {
                         "the box declared no dynamic allowed range".to_string()
                     }
-                    sessions::core::egress::DynamicPortVerdict::OutOfRange { .. } => {
+                    boxes::core::egress::DynamicPortVerdict::OutOfRange { .. } => {
                         "the port is outside the box's dynamic allowed range".to_string()
                     }
                     // Not reached: an allowed port is a `Publish` verdict.
-                    sessions::core::egress::DynamicPortVerdict::Allow => {
+                    boxes::core::egress::DynamicPortVerdict::Allow => {
                         "the stance allows it but the verdict did not".to_string()
                     }
                 };
@@ -2068,7 +2068,7 @@ impl WatchState {
                 // box's declaration could have published is never quiet.
                 if matches!(
                     self.plan.gate.dynamic_verdict(port),
-                    sessions::core::egress::DynamicPortVerdict::OutOfRange { .. }
+                    boxes::core::egress::DynamicPortVerdict::OutOfRange { .. }
                 ) {
                     tracing::warn!(
                         session = %self.plan.box_name,
@@ -2129,7 +2129,7 @@ impl WatchState {
             ts: chrono::Utc::now().to_rfc3339(),
             box_name: self.plan.box_name.clone(),
             port,
-            decision: sessions::DynamicIngress::Allow,
+            decision: boxes::DynamicIngress::Allow,
             decided_by: crate::audit::DecidedBy::BoxPolicy,
             outcome,
             reason,
@@ -2726,19 +2726,19 @@ mod tests {
     /// The box's ingress declaration: nothing statically mapped, a permit
     /// range covering exactly `port`, and the stance that lets listening
     /// publish (NET-016).
-    fn permit_policy(port: u16) -> sessions::SessionPolicy {
+    fn permit_policy(port: u16) -> boxes::SessionPolicy {
         permit_range_policy(port, port)
     }
 
     /// [`permit_policy`] over `low..=high`, for a proof that holds every
     /// port in the range itself — so the range admits nothing it does not
     /// hold (see [`adjacent_any_listeners`]).
-    fn permit_range_policy(low: u16, high: u16) -> sessions::SessionPolicy {
-        sessions::SessionPolicy {
-            ingress: Some(sessions::IngressPolicy {
+    fn permit_range_policy(low: u16, high: u16) -> boxes::SessionPolicy {
+        boxes::SessionPolicy {
+            ingress: Some(boxes::IngressPolicy {
                 port_mappings: Vec::new(),
                 dynamic_allowed_range: Some((low, high)),
-                dynamic_ingress: Some(sessions::DynamicIngress::Allow),
+                dynamic_ingress: Some(boxes::DynamicIngress::Allow),
             }),
             egress: None,
             // No credentialed upstream (NET-134): these tests hold no lane,
@@ -2754,7 +2754,7 @@ mod tests {
     /// the set the launch would share.
     fn watcher_with(
         sock: PathBuf,
-        policy: &sessions::SessionPolicy,
+        policy: &boxes::SessionPolicy,
         leader: Leader,
     ) -> (ListenWatcher, Arc<SessionGate>) {
         let gate = Arc::new(SessionGate::for_session(
@@ -2791,7 +2791,7 @@ mod tests {
     /// it — the shape a box whose host resolved its leader starts with.
     fn watcher_at(
         sock: PathBuf,
-        policy: &sessions::SessionPolicy,
+        policy: &boxes::SessionPolicy,
     ) -> (ListenWatcher, Arc<SessionGate>) {
         watcher_with(sock, policy, Leader::Resolved(std::process::id()))
     }
@@ -2802,7 +2802,7 @@ mod tests {
     /// receiver.
     fn started_watcher(
         dir: &tempfile::TempDir,
-        policy: &sessions::SessionPolicy,
+        policy: &boxes::SessionPolicy,
     ) -> (
         ListenWatcher,
         Arc<SessionGate>,
@@ -2820,7 +2820,7 @@ mod tests {
     /// already holding what the expose surface published.
     fn started_watcher_with_publications(
         dir: &tempfile::TempDir,
-        policy: &sessions::SessionPolicy,
+        policy: &boxes::SessionPolicy,
         seed: impl FnOnce(&BoxPublications),
     ) -> (
         ListenWatcher,
@@ -2945,15 +2945,15 @@ mod tests {
         // the stance permit it: the TCP listener must fall to the rules and
         // be published by them, not answered "published already" under a
         // forward that would never answer its protocol.
-        let policy = sessions::SessionPolicy {
-            ingress: Some(sessions::IngressPolicy {
-                port_mappings: vec![sessions::PortMapping {
+        let policy = boxes::SessionPolicy {
+            ingress: Some(boxes::IngressPolicy {
+                port_mappings: vec![boxes::PortMapping {
                     external_port: port,
                     internal_port: port,
-                    proto: sessions::IpProto::Udp,
+                    proto: boxes::IpProto::Udp,
                 }],
                 dynamic_allowed_range: Some((port, port)),
-                dynamic_ingress: Some(sessions::DynamicIngress::Allow),
+                dynamic_ingress: Some(boxes::DynamicIngress::Allow),
             }),
             egress: None,
             credentialed_upstream: None,
@@ -3597,15 +3597,15 @@ mod tests {
         let listener = listening_socket();
         let port = port_of(&listener);
         let dir = tempfile::tempdir().unwrap();
-        let policy = sessions::SessionPolicy {
-            ingress: Some(sessions::IngressPolicy {
-                port_mappings: vec![sessions::PortMapping {
+        let policy = boxes::SessionPolicy {
+            ingress: Some(boxes::IngressPolicy {
+                port_mappings: vec![boxes::PortMapping {
                     external_port: port,
                     internal_port: port,
-                    proto: sessions::IpProto::Tcp,
+                    proto: boxes::IpProto::Tcp,
                 }],
                 dynamic_allowed_range: Some((port, port)),
-                dynamic_ingress: Some(sessions::DynamicIngress::Allow),
+                dynamic_ingress: Some(boxes::DynamicIngress::Allow),
             }),
             egress: None,
             credentialed_upstream: None,
@@ -3855,11 +3855,11 @@ mod tests {
         let any_port = port_of(&any);
         let dir = tempfile::tempdir().unwrap();
         // The rules permit both ports: only the binds differ.
-        let policy = sessions::SessionPolicy {
-            ingress: Some(sessions::IngressPolicy {
+        let policy = boxes::SessionPolicy {
+            ingress: Some(boxes::IngressPolicy {
                 port_mappings: Vec::new(),
                 dynamic_allowed_range: Some((loop_port.min(any_port), loop_port.max(any_port))),
-                dynamic_ingress: Some(sessions::DynamicIngress::Allow),
+                dynamic_ingress: Some(boxes::DynamicIngress::Allow),
             }),
             egress: None,
             credentialed_upstream: None,

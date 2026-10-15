@@ -26,7 +26,7 @@
 //!
 //! The gate is not a second TCP/IP stack. It parses nothing above the
 //! Ethernet header, and that only to summarize a frame for the shared verdict
-//! (`sessions::core::egress` — the same pure decision the in-guest relay
+//! (`boxes::core::egress` — the same pure decision the in-guest relay
 //! applies, made here where nothing inside the VM can change it). It forwards
 //! the gvproxy upgrade head verbatim, then relays both ways: guest → switch
 //! through the verdict, per source address; switch → guest applied to nothing
@@ -59,7 +59,7 @@
 //! of it is written on** — its body is read by the `Content-Length` its head
 //! declared, summarized into the request it asks the switch to publish, and
 //! decided against the host-side table
-//! ([`sessions::core::switch_request`]): a publish of a port or a name is
+//! ([`boxes::core::switch_request`]): a publish of a port or a name is
 //! applied only where a published namespace holds the address it names and
 //! admits the record, and every other request — an off-list target, a body
 //! the gate cannot frame or parse, a publish the table refuses — is refused
@@ -159,9 +159,9 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tracing::Instrument as _;
 
-use sessions::EgressDefaultPhase;
-use sessions::core::egress::{self, DropReason, FrameFamily, FrameSummary, FrameVerdict, Ipv4Cidr};
-use sessions::core::switch_request::{
+use boxes::EgressDefaultPhase;
+use boxes::core::egress::{self, DropReason, FrameFamily, FrameSummary, FrameVerdict, Ipv4Cidr};
+use boxes::core::switch_request::{
     self, Applied, MAX_REQUEST_RECORDS, Record, Refusal, SwitchRequest, SwitchRow, SwitchTable,
     SwitchVerb,
 };
@@ -493,7 +493,7 @@ const RESOLVER_PROTOCOLS: [u8; 2] = [6, 17];
 const INFRASTRUCTURE_RULE: &str = "egress-infrastructure-destination";
 
 /// The ranges the host-side infrastructure rule refuses — the host frame
-/// rule's own copy of the §5.3 set, built beside the sessions crate's
+/// rule's own copy of the §5.3 set, built beside the `boxes` crate's
 /// [`egress::InfrastructureDenySet`] rather than from it, because the two
 /// decide different things and the rebinding intersection relies on its own
 /// shape: that set names the gateway's two addresses as `/32`s (here the
@@ -3381,7 +3381,7 @@ async fn terminate_flows(
 /// Decides one control request against the host-side table (NET-081's
 /// publish half, applied at relay level): summarize the request the verb and
 /// body ask the switch for, decide it with the pure decision
-/// ([`sessions::core::switch_request::applied`]) against a table built from
+/// ([`boxes::core::switch_request::applied`]) against a table built from
 /// this gate's rows, and hand the relay either the admission or the refusal
 /// its warn line is rendered from. The parsing is per-verb — the three body
 /// shapes the daemon's own client sends — and every shape failure is the
@@ -3537,8 +3537,8 @@ fn switch_rows_of(
         // forward never is (the declaration is not the box's runtime fact
         // to retract).
         let runtime = match request_proto {
-            Some(egress::IPPROTO_TCP) => record.runtime_port_numbers_in(sessions::IpProto::Tcp),
-            Some(egress::IPPROTO_UDP) => record.runtime_port_numbers_in(sessions::IpProto::Udp),
+            Some(egress::IPPROTO_TCP) => record.runtime_port_numbers_in(boxes::IpProto::Tcp),
+            Some(egress::IPPROTO_UDP) => record.runtime_port_numbers_in(boxes::IpProto::Udp),
             _ => Vec::new(),
         };
         let mut ports = record.admitted_ports().to_vec();
@@ -4492,7 +4492,7 @@ async fn relay_frames_to_switch(
 
 /// The phase the egress default's rollout is at — the same cutover shape the
 /// guest's own egress-default rollout
-/// ([`sessions::EGRESS_DEFAULT_PHASE`]) models: a named phase, read by the
+/// ([`boxes::EGRESS_DEFAULT_PHASE`]) models: a named phase, read by the
 /// decision, flipped by one constant.
 ///
 /// Two postures this module carries, one unconditional and one phased, and
@@ -4580,24 +4580,24 @@ impl UnregisteredSourcePhase {
 pub(crate) const UNREGISTERED_SOURCE_PHASE: UnregisteredSourcePhase =
     UnregisteredSourcePhase::InForce;
 
-// The host gate's phase and the guest daemon's (`sessions::EGRESS_DEFAULT_PHASE`)
+// The host gate's phase and the guest daemon's (`boxes::EGRESS_DEFAULT_PHASE`)
 // are one rollout: an undeclared own-address box is compiled under this
 // constant on the host and under the guest's on its boot line. If only one
 // flipped, the host could allow what the guest denies, and after an escape
 // only the host side holds. The build refuses that split.
 const _: () = assert!(
     matches!(
-        (UNREGISTERED_SOURCE_PHASE, sessions::EGRESS_DEFAULT_PHASE),
+        (UNREGISTERED_SOURCE_PHASE, boxes::EGRESS_DEFAULT_PHASE),
         (
             UnregisteredSourcePhase::Announced,
-            sessions::EgressDefaultPhase::Announced
+            boxes::EgressDefaultPhase::Announced
         ) | (
             UnregisteredSourcePhase::InForce,
-            sessions::EgressDefaultPhase::InForce
+            boxes::EgressDefaultPhase::InForce
         )
     ),
     "flip both constants together: minvmd's UNREGISTERED_SOURCE_PHASE and \
-     sessions::EGRESS_DEFAULT_PHASE are one egress-default rollout"
+     boxes::EGRESS_DEFAULT_PHASE are one egress-default rollout"
 );
 
 /// What the gate decided one frame's admission by: which of the three ways in
@@ -6882,8 +6882,8 @@ mod tests {
     use std::time::{Duration, Instant};
     use tracing::Instrument as _;
 
-    use sessions::EgressPolicy;
-    use sessions::core::egress::{DropReason, FrameFamily, FrameVerdict, InboundFlow, Ipv4Cidr};
+    use boxes::EgressPolicy;
+    use boxes::core::egress::{DropReason, FrameFamily, FrameVerdict, InboundFlow, Ipv4Cidr};
     use switch::SwitchSubnet;
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -6924,7 +6924,7 @@ mod tests {
             BoxRegistration::new("web", Ipv4Addr::from(lease), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["10.0.0.0/8".to_string()]),
                     allow_dns_hosts: None,
                     deny_subnets: None,
@@ -7022,7 +7022,7 @@ mod tests {
     async fn box_cannot_reach_switch_api() {
         // Two boxes whose rules allow everything: one whose declaration
         // carries no `egress` section — the allow-all program
-        // [`sessions::core::egress::EgressRules::from_policy`] compiles for
+        // [`boxes::core::egress::EgressRules::from_policy`] compiles for
         // an absent one — and one whose `egress` section allows all
         // explicitly. Neither row admits the gateway; the admitted ports are
         // each box's own ingress, which the gateway refusal never consults.
@@ -7144,7 +7144,7 @@ mod tests {
             BoxRegistration::new("weather", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["203.0.113.0/24".to_string()]),
                     allow_dns_hosts: Some(vec!["example.com".to_string()]),
                     deny_subnets: Some(vec!["198.51.100.0/24".to_string()]),
@@ -7159,7 +7159,7 @@ mod tests {
             BoxRegistration::new("closed-names", Ipv4Addr::from(empty), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["203.0.113.0/24".to_string()]),
                     allow_dns_hosts: Some(Vec::new()),
                     deny_subnets: None,
@@ -7326,7 +7326,7 @@ mod tests {
             BoxRegistration::new("weather", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["203.0.113.0/24".to_string()]),
                     allow_dns_hosts: Some(vec!["example.com".to_string()]),
                     deny_subnets: Some(vec!["198.51.100.0/24".to_string()]),
@@ -7428,7 +7428,7 @@ mod tests {
             BoxRegistration::new("weather", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["203.0.113.0/24".to_string()]),
                     allow_dns_hosts: Some(vec!["example.com".to_string()]),
                     deny_subnets: None,
@@ -7545,7 +7545,7 @@ mod tests {
             BoxRegistration::new("weather", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["203.0.113.0/24".to_string()]),
                     allow_dns_hosts: Some(vec!["example.com".to_string()]),
                     deny_subnets: Some(vec!["198.51.100.0/24".to_string()]),
@@ -7730,7 +7730,7 @@ mod tests {
             BoxRegistration::new("weather", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["203.0.113.0/24".to_string()]),
                     allow_dns_hosts: Some(vec!["example.com".to_string()]),
                     deny_subnets: None,
@@ -7998,7 +7998,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &dial).await;
         assert_eq!(
@@ -8026,7 +8026,7 @@ mod tests {
             18080,
             forwarder,
             40000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         send_frame(&mut guest, &answer).await;
         assert_eq!(
@@ -8087,7 +8087,7 @@ mod tests {
             40003,
             Ipv4Addr::from(LEASE),
             8080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &external_dial).await;
         assert_eq!(
@@ -8111,21 +8111,21 @@ mod tests {
             18080,
             sibling,
             40002,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         let from_external = dns_pins::tests::tcp_frame(
             Ipv4Addr::from(LEASE),
             8080,
             external_client,
             40003,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         let own_connect = dns_pins::tests::tcp_frame(
             Ipv4Addr::from(LEASE),
             40000,
             sibling,
             443,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         for frame in [&unopened, &from_external, &own_connect] {
             send_frame(&mut guest, frame).await;
@@ -8157,7 +8157,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &flood).await;
         // An ARP frame on the same leg is delivered — ingress relays
@@ -8252,14 +8252,14 @@ mod tests {
             8080,
             client,
             40000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         let self_connect = dns_pins::tests::tcp_frame(
             client,
             40000,
             Ipv4Addr::from(LEASE),
             8080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         for frame in [&forged, &self_connect] {
             send_frame(&mut guest, frame).await;
@@ -8286,7 +8286,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             8080,
-            sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_ACK,
         );
         send_frame(&mut switch, &midstream).await;
         assert_eq!(
@@ -8301,7 +8301,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             9999,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &unpublished).await;
         assert_eq!(
@@ -8323,7 +8323,7 @@ mod tests {
             9999,
             client,
             40000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         for frame in [&forged, &from_unpublished] {
             send_frame(&mut guest, frame).await;
@@ -8344,7 +8344,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             8080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &connect).await;
         assert_eq!(
@@ -8415,7 +8415,7 @@ mod tests {
                 LEASE,
                 18080,
                 super::egress::IPPROTO_TCP,
-                sessions::core::switch_request::Applied::Row,
+                boxes::core::switch_request::Applied::Row,
             )
             .expect("an empty ledger has room for one publish");
         assert!(
@@ -8436,7 +8436,7 @@ mod tests {
         let decide = |replies: &ReplyTables, frame: &[u8]| {
             let l4 = dns_pins::parse_ipv4_l4(frame)
                 .expect("the frame builder's IPv4 header always parses");
-            let summary = sessions::core::egress::summarize(frame);
+            let summary = boxes::core::egress::summarize(frame);
             gate_verdict(&summary, Some(&l4), &table, &baseline, &pins, replies)
         };
 
@@ -8451,7 +8451,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         let dial_l4 =
             dns_pins::parse_ipv4_l4(&dial).expect("the frame builder's IPv4 header always parses");
@@ -8471,7 +8471,7 @@ mod tests {
             18080,
             forwarder,
             40000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         assert_eq!(
             decide(&replies, &answer),
@@ -8502,7 +8502,7 @@ mod tests {
             18080,
             forwarder,
             39999,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         assert_eq!(
             decide(&replies, &unopened),
@@ -8518,7 +8518,7 @@ mod tests {
             8080,
             forwarder,
             40000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         assert_eq!(
             decide(&replies, &from_external),
@@ -8539,7 +8539,7 @@ mod tests {
             40000,
             Ipv4Addr::from(dst),
             dst_port,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         let at = syn.len() - 20 + 4;
         syn[at..at + 4].copy_from_slice(&seq.to_be_bytes());
@@ -8576,7 +8576,7 @@ mod tests {
         registry.register(
             BoxRegistration::new("peer", Ipv4Addr::from(SIBLING), Ipv4Addr::LOCALHOST)
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["100.64.0.0/10".to_string()]),
                     allow_dns_hosts: None,
                     deny_subnets: None,
@@ -8589,7 +8589,7 @@ mod tests {
         let decide = |frame: &[u8]| {
             let l4 = dns_pins::parse_ipv4_l4(frame)
                 .expect("the frame builder's IPv4 header always parses");
-            let summary = sessions::core::egress::summarize(frame);
+            let summary = boxes::core::egress::summarize(frame);
             gate_verdict(&summary, Some(&l4), &table, &baseline, &pins, &replies)
         };
         let note = |frame: &[u8], now: Instant| {
@@ -8611,7 +8611,7 @@ mod tests {
             18121,
             Ipv4Addr::from(SIBLING),
             40000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         assert!(
             decide(&syn_ack).is_err(),
@@ -8673,7 +8673,7 @@ mod tests {
         let decide = |frame: &[u8]| {
             let l4 = dns_pins::parse_ipv4_l4(frame)
                 .expect("the frame builder's IPv4 header always parses");
-            let summary = sessions::core::egress::summarize(frame);
+            let summary = boxes::core::egress::summarize(frame);
             gate_verdict(&summary, Some(&l4), &table, &baseline, &pins, &replies)
         };
         let note = |frame: &[u8]| {
@@ -8782,7 +8782,7 @@ mod tests {
                 LEASE,
                 18080,
                 super::egress::IPPROTO_TCP,
-                sessions::core::switch_request::Applied::Row,
+                boxes::core::switch_request::Applied::Row,
             )
             .expect("an empty ledger has room for one publish");
         assert!(
@@ -8798,7 +8798,7 @@ mod tests {
         let decide = |replies: &ReplyTables, frame: &[u8]| {
             let l4 = dns_pins::parse_ipv4_l4(frame)
                 .expect("the frame builder's IPv4 header always parses");
-            let summary = sessions::core::egress::summarize(frame);
+            let summary = boxes::core::egress::summarize(frame);
             gate_verdict(&summary, Some(&l4), &table, &baseline, &pins, replies)
         };
 
@@ -8811,7 +8811,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         let dial_l4 =
             dns_pins::parse_ipv4_l4(&dial).expect("the frame builder's IPv4 header always parses");
@@ -8835,7 +8835,7 @@ mod tests {
             18080,
             proxy,
             40000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         assert_eq!(
             decide(&replies, &answer),
@@ -8880,7 +8880,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         let dial_l4 =
             dns_pins::parse_ipv4_l4(&dial).expect("the frame builder's IPv4 header always parses");
@@ -8904,11 +8904,11 @@ mod tests {
             18080,
             proxy,
             40000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         let answer_l4 = dns_pins::parse_ipv4_l4(&answer)
             .expect("the frame builder's IPv4 header always parses");
-        let summary = sessions::core::egress::summarize(&answer);
+        let summary = boxes::core::egress::summarize(&answer);
         assert_eq!(
             gate_verdict(
                 &summary,
@@ -8954,7 +8954,7 @@ mod tests {
                 node_addr,
                 7654,
                 super::egress::IPPROTO_TCP,
-                sessions::core::switch_request::Applied::Row,
+                boxes::core::switch_request::Applied::Row,
             )
             .expect("an empty ledger has room for one publish");
         assert!(
@@ -8970,7 +8970,7 @@ mod tests {
         let decide = |replies: &ReplyTables, frame: &[u8]| {
             let l4 = dns_pins::parse_ipv4_l4(frame)
                 .expect("the frame builder's IPv4 header always parses");
-            let summary = sessions::core::egress::summarize(frame);
+            let summary = boxes::core::egress::summarize(frame);
             gate_verdict(&summary, Some(&l4), &table, &baseline, &pins, replies)
         };
 
@@ -8982,7 +8982,7 @@ mod tests {
             7654,
             SUBNET.gateway(),
             50000,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         assert_eq!(
             decide(&replies, &own_connect),
@@ -9007,7 +9007,7 @@ mod tests {
             51000,
             Ipv4Addr::from(node_addr),
             7654,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         let dial_l4 =
             dns_pins::parse_ipv4_l4(&dial).expect("the frame builder's IPv4 header always parses");
@@ -9023,7 +9023,7 @@ mod tests {
             7654,
             SUBNET.gateway(),
             51000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         assert_eq!(
             decide(&replies, &answer),
@@ -9041,7 +9041,7 @@ mod tests {
             7654,
             SUBNET.gateway(),
             50001,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         assert_eq!(
             decide(&replies, &fresh_connect),
@@ -9056,7 +9056,7 @@ mod tests {
             7656,
             SUBNET.gateway(),
             51000,
-            sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_ACK,
         );
         assert_eq!(
             decide(&replies, &from_answerer),
@@ -9116,7 +9116,7 @@ mod tests {
                 LEASE,
                 18080,
                 super::egress::IPPROTO_TCP,
-                sessions::core::switch_request::Applied::Row,
+                boxes::core::switch_request::Applied::Row,
             )
             .expect("an empty ledger has room for one publish");
         assert!(
@@ -9132,7 +9132,7 @@ mod tests {
         let decide = |replies: &ReplyTables, frame: &[u8]| {
             let l4 = dns_pins::parse_ipv4_l4(frame)
                 .expect("the frame builder's IPv4 header always parses");
-            let summary = sessions::core::egress::summarize(frame);
+            let summary = boxes::core::egress::summarize(frame);
             gate_verdict(&summary, Some(&l4), &table, &baseline, &pins, replies)
         };
 
@@ -9147,7 +9147,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         let dial_l4 =
             dns_pins::parse_ipv4_l4(&dial).expect("the frame builder's IPv4 header always parses");
@@ -9164,7 +9164,7 @@ mod tests {
             18080,
             forwarder,
             40000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         let answer_l4 = dns_pins::parse_ipv4_l4(&answer)
             .expect("the frame builder's IPv4 header always parses");
@@ -9180,7 +9180,7 @@ mod tests {
         // removes the expired record and admits nothing — the table is
         // bounded by the conversation it was opened for, and the record is
         // gone, not merely refused.
-        let expired = t1 + sessions::core::egress::REPLY_TCP_IDLE_CAP + Duration::from_secs(1);
+        let expired = t1 + boxes::core::egress::REPLY_TCP_IDLE_CAP + Duration::from_secs(1);
         assert!(
             !replies.reply_admits(&record, &answer_l4, expired),
             "the record is gone with the conversation that went quiet"
@@ -9211,7 +9211,7 @@ mod tests {
             40001,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         let second_dial_l4 = dns_pins::parse_ipv4_l4(&second_dial)
             .expect("the frame builder's IPv4 header always parses");
@@ -9234,7 +9234,7 @@ mod tests {
             18080,
             forwarder,
             40001,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         assert_eq!(
             decide(&replies, &second_answer),
@@ -9295,7 +9295,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &first).await;
         assert_eq!(
@@ -9315,7 +9315,7 @@ mod tests {
             18080,
             forwarder,
             40000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         send_frame(&mut guest, &answer).await;
         assert_eq!(
@@ -9335,7 +9335,7 @@ mod tests {
             40001,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &second).await;
         let noise = arp_frame(forwarder.octets());
@@ -9372,7 +9372,7 @@ mod tests {
             18080,
             forwarder,
             40001,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         send_frame(&mut guest, &refused_answer).await;
         send_frame(&mut guest, &answer).await;
@@ -9407,7 +9407,7 @@ mod tests {
         let node_addr = node.switch_addr().octets();
         registry.register(
             BoxRegistration::new("web", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
-                .with_dynamic_ingress(sessions::DynamicIngress::Allow, Some((8080, 8081)))
+                .with_dynamic_ingress(boxes::DynamicIngress::Allow, Some((8080, 8081)))
                 .with_egress_policy(EgressPolicy {
                     allow_protocols: None,
                     allow_subnets: Some(vec![]),
@@ -9423,7 +9423,7 @@ mod tests {
                 .admit_runtime_port(
                     Ipv4Addr::from(LEASE),
                     port,
-                    sessions::IpProto::Tcp,
+                    boxes::IpProto::Tcp,
                     std::time::Instant::now(),
                 )
                 .expect("the report is inside the grant the row holds");
@@ -9458,14 +9458,14 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         let second_dial = dns_pins::tests::tcp_frame(
             forwarder,
             40001,
             Ipv4Addr::from(LEASE),
             18081,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &first_dial).await;
         assert_eq!(
@@ -9489,14 +9489,14 @@ mod tests {
             18080,
             forwarder,
             40000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         let second_answer = dns_pins::tests::tcp_frame(
             Ipv4Addr::from(LEASE),
             18081,
             forwarder,
             40001,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         send_frame(&mut guest, &first_answer).await;
         assert_eq!(
@@ -9591,7 +9591,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &dial).await;
         assert_eq!(expect_frame(&mut guest).await, dial);
@@ -9600,7 +9600,7 @@ mod tests {
             18080,
             forwarder,
             40000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         send_frame(&mut guest, &answer).await;
         assert_eq!(expect_frame(&mut switch).await, answer);
@@ -9665,7 +9665,7 @@ mod tests {
             .expect("the first frame is a TCP segment");
         assert_eq!(
             reset.flags,
-            sessions::core::egress::TCP_RST,
+            boxes::core::egress::TCP_RST,
             "the frame is a bare reset: {reset:?}"
         );
         assert_eq!(
@@ -9799,7 +9799,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &dial).await;
         assert_eq!(expect_frame(&mut guest).await, dial);
@@ -9808,7 +9808,7 @@ mod tests {
             18080,
             forwarder,
             40000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         send_frame(&mut guest, &answer).await;
         assert_eq!(expect_frame(&mut switch).await, answer);
@@ -9848,7 +9848,7 @@ mod tests {
         let len = usize::from(u16::from_le_bytes([frames[0], frames[1]]));
         let reset = super::forward_revoke::parse_tcp_segment(&frames[2..2 + len])
             .expect("the first frame is a TCP segment");
-        assert_eq!(reset.flags, sessions::core::egress::TCP_RST);
+        assert_eq!(reset.flags, boxes::core::egress::TCP_RST);
         assert_eq!(
             (reset.src, reset.src_port, reset.dst, reset.dst_port),
             (LEASE, 18080, forwarder.octets(), 40000),
@@ -10010,7 +10010,7 @@ mod tests {
                 LEASE,
                 18080,
                 super::egress::IPPROTO_TCP,
-                sessions::core::switch_request::Applied::Row
+                boxes::core::switch_request::Applied::Row
             ),
             Ok(true)
         );
@@ -10154,7 +10154,7 @@ mod tests {
             addr,
             inside,
             super::egress::IPPROTO_TCP,
-            sessions::core::switch_request::Applied::Row,
+            boxes::core::switch_request::Applied::Row,
             Some(id),
         )
     }
@@ -10298,7 +10298,7 @@ mod tests {
                     [100, 64, 0, 12],
                     18083,
                     super::egress::IPPROTO_TCP,
-                    sessions::core::switch_request::Applied::Row,
+                    boxes::core::switch_request::Applied::Row,
                     None,
                 ),
                 Ok(super::Admitted::HeldElsewhere),
@@ -10312,7 +10312,7 @@ mod tests {
                     LEASE,
                     18080,
                     super::egress::IPPROTO_TCP,
-                    sessions::core::switch_request::Applied::Row
+                    boxes::core::switch_request::Applied::Row
                 ),
                 Ok(true)
             );
@@ -10444,7 +10444,7 @@ mod tests {
     /// it and takes no second slot.
     #[test]
     fn waiting_forwards_are_refused_past_the_ledger_bound() {
-        use sessions::core::switch_request::Applied;
+        use boxes::core::switch_request::Applied;
         const OTHER: [u8; 4] = [100, 64, 0, 11];
         let forwards = PublishedForwards::new();
         let listener = |n: usize| -> super::Listener {
@@ -10659,7 +10659,7 @@ mod tests {
                 [100, 64, 0, 12],
                 18083,
                 super::egress::IPPROTO_TCP,
-                sessions::core::switch_request::Applied::Row,
+                boxes::core::switch_request::Applied::Row,
                 None,
             ),
             Ok(super::Admitted::HeldElsewhere),
@@ -10795,7 +10795,7 @@ mod tests {
     /// a row-held slot frees binds it.
     #[tokio::test]
     async fn a_hand_over_at_the_ledger_bound_is_owed_a_retry() {
-        use sessions::core::switch_request::Applied;
+        use boxes::core::switch_request::Applied;
         let dir = tempfile::TempDir::new().expect("a tempdir");
         let sock = dir.path().join("switch.sock");
         static ANSWERS: [(&str, &str); 1] = [("200 OK", "")];
@@ -10978,7 +10978,7 @@ mod tests {
                 LEASE,
                 19090,
                 super::egress::IPPROTO_TCP,
-                sessions::core::switch_request::Applied::Row
+                boxes::core::switch_request::Applied::Row
             ),
             Ok(true)
         );
@@ -11202,7 +11202,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_ACK,
         );
         send_frame(&mut switch, &mid_stream).await;
         assert_eq!(
@@ -11224,7 +11224,7 @@ mod tests {
             40002,
             Ipv4Addr::from(LEASE),
             8080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &external_dial).await;
         assert_eq!(
@@ -11247,7 +11247,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &dial).await;
         assert_eq!(
@@ -11267,7 +11267,7 @@ mod tests {
             18080,
             forwarder,
             40000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         send_frame(&mut guest, &answer).await;
         assert_eq!(
@@ -11285,7 +11285,7 @@ mod tests {
             18080,
             forwarder,
             40000,
-            sessions::core::egress::TCP_FIN,
+            boxes::core::egress::TCP_FIN,
         );
         send_frame(&mut guest, &close).await;
         assert_eq!(
@@ -11343,7 +11343,7 @@ mod tests {
             51000,
             Ipv4Addr::from(node_addr),
             7654,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &dial).await;
         assert_eq!(
@@ -11367,7 +11367,7 @@ mod tests {
             7654,
             forwarder,
             51000,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         send_frame(&mut guest, &answer).await;
         assert_eq!(
@@ -11385,14 +11385,14 @@ mod tests {
             7654,
             forwarder,
             50000,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         let from_answerer = dns_pins::tests::tcp_frame(
             Ipv4Addr::from(node_addr),
             7656,
             forwarder,
             51000,
-            sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_ACK,
         );
         for frame in [&own_connect, &from_answerer] {
             send_frame(&mut guest, frame).await;
@@ -11414,7 +11414,7 @@ mod tests {
             7654,
             forwarder,
             51000,
-            sessions::core::egress::TCP_FIN,
+            boxes::core::egress::TCP_FIN,
         );
         send_frame(&mut guest, &close).await;
         assert_eq!(
@@ -11469,7 +11469,7 @@ mod tests {
             40000,
             Ipv4Addr::from(node_addr),
             7654,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &opening).await;
         // A SYN carrying other flags but no ACK is still an opening packet by
@@ -11479,7 +11479,7 @@ mod tests {
             40001,
             Ipv4Addr::from(node_addr),
             7654,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_FIN,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_FIN,
         );
         send_frame(&mut switch, &odd_opening).await;
 
@@ -11493,7 +11493,7 @@ mod tests {
             40000,
             Ipv4Addr::from(node_addr),
             7654,
-            sessions::core::egress::TCP_SYN | sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_SYN | boxes::core::egress::TCP_ACK,
         );
         send_frame(&mut switch, &answer).await;
         assert_eq!(
@@ -11549,7 +11549,7 @@ mod tests {
             BoxRegistration::new("weather", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["203.0.113.0/24".to_string()]),
                     allow_dns_hosts: Some(vec!["example.com".to_string()]),
                     deny_subnets: None,
@@ -11559,7 +11559,7 @@ mod tests {
             BoxRegistration::new("open", Ipv4Addr::from(open), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["0.0.0.0/0".to_string()]),
                     allow_dns_hosts: None,
                     deny_subnets: None,
@@ -11663,7 +11663,7 @@ mod tests {
         registry.register(
             BoxRegistration::new("laned", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
-                .with_credentialed_upstream(sessions::CredentialedUpstream::default())
+                .with_credentialed_upstream(boxes::CredentialedUpstream::default())
                 .with_egress_policy(EgressPolicy {
                     // Deny-all: every IPv4 destination is denied, the
                     // spelling the activating client's `--deny-subnets
@@ -11749,7 +11749,7 @@ mod tests {
         registry.register(
             BoxRegistration::new("laned", Ipv4Addr::from(laned), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
-                .with_credentialed_upstream(sessions::CredentialedUpstream::default()),
+                .with_credentialed_upstream(boxes::CredentialedUpstream::default()),
         );
         let mut h = gate_over(registry).await;
         let proxy = SUBNET.box_egress_proxy_address().octets();
@@ -11829,7 +11829,7 @@ mod tests {
         registry.register(
             BoxRegistration::new("laned", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
-                .with_credentialed_upstream(sessions::CredentialedUpstream::default())
+                .with_credentialed_upstream(boxes::CredentialedUpstream::default())
                 .with_egress_policy(EgressPolicy {
                     // Deny-all, the spelling the activating client's
                     // `--deny-subnets 0.0.0.0/0` compiles to: the listener is
@@ -11915,7 +11915,7 @@ mod tests {
         registry.register(
             BoxRegistration::new("laned", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
-                .with_credentialed_upstream(sessions::CredentialedUpstream::default()),
+                .with_credentialed_upstream(boxes::CredentialedUpstream::default()),
         );
         registry.register(
             BoxRegistration::new(
@@ -12034,7 +12034,7 @@ mod tests {
         // the address is inside no category's endpoints.
         let in_force = baseline.clone().in_force();
         for (proto, port) in [(6, 8118), (17, 8118)] {
-            let frame = sessions::core::egress::summarize(&ipv4_frame(node, proto, proxy, port));
+            let frame = boxes::core::egress::summarize(&ipv4_frame(node, proto, proxy, port));
             match gate_verdict(&frame, None, &table, &in_force, &pins, &ReplyTables::new()) {
                 Ok(GateAdmit::Baseline) => panic!(
                     "the baseline set admitted the proxy's address at proto {proto} port {port}"
@@ -12055,7 +12055,7 @@ mod tests {
         // Announced, the shipped interim: the node row — allow-all, and the
         // row that decides the node plane until the flip — declares no lane,
         // so the proxy rule drops the same frame. Either posture, no reach.
-        let frame = sessions::core::egress::summarize(&ipv4_frame(node, 6, proxy, 8118));
+        let frame = boxes::core::egress::summarize(&ipv4_frame(node, 6, proxy, 8118));
         assert!(
             matches!(
                 gate_verdict(&frame, None, &table, &baseline, &pins, &ReplyTables::new()),
@@ -12460,7 +12460,7 @@ mod tests {
             row.switch_addr().octets()
         };
         let lan = || EgressPolicy {
-            allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+            allow_protocols: Some(vec![boxes::IpProto::Tcp]),
             allow_subnets: Some(vec!["10.0.0.0/8".to_string()]),
             allow_dns_hosts: None,
             deny_subnets: None,
@@ -14373,7 +14373,7 @@ mod tests {
         // against: empty, because the row declared no names and no reply has
         // been observed — the arm below stays unreachable for it.
         let pins = dns_pins::DnsPins::new(SUBNET);
-        let summarize = sessions::core::egress::summarize;
+        let summarize = boxes::core::egress::summarize;
 
         // A held source is decided by its rules: the same frame that the
         // relay test watches pass and drop, decided here with no sockets.
@@ -14396,7 +14396,7 @@ mod tests {
             .clone();
         assert!(
             matches!(
-                sessions::core::egress::verdict(&declared, &rules),
+                boxes::core::egress::verdict(&declared, &rules),
                 FrameVerdict::Admit
             ),
             "the shared verdict admits what the gate admits"
@@ -14649,7 +14649,7 @@ mod tests {
             registry.register(
                 BoxRegistration::new(name, Ipv4Addr::from(lease), Ipv4Addr::LOCALHOST)
                     .with_egress_policy(EgressPolicy {
-                        allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                        allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                         allow_subnets: Some(subnets),
                         allow_dns_hosts: None,
                         deny_subnets: None,
@@ -14674,7 +14674,7 @@ mod tests {
             dst: [u8; 4],
             port: u16,
         ) -> Attempt {
-            let frame = sessions::core::egress::summarize(&ipv4_frame(src, proto, dst, port));
+            let frame = boxes::core::egress::summarize(&ipv4_frame(src, proto, dst, port));
             // No reply-flow records exist for any of these attempts — nothing
             // was ever delivered toward a box's published port — so the empty
             // table is the one the pure decision reads, and the frame's verdict
@@ -14945,7 +14945,7 @@ mod tests {
                         Ipv4Addr::from(attempt.src),
                     )
                 });
-                let summary = sessions::core::egress::summarize(&ipv4_frame(
+                let summary = boxes::core::egress::summarize(&ipv4_frame(
                     attempt.src,
                     attempt.proto,
                     attempt.dst,
@@ -14953,7 +14953,7 @@ mod tests {
                 ));
                 assert!(
                     matches!(
-                        sessions::core::egress::verdict(&summary, record.egress()),
+                        boxes::core::egress::verdict(&summary, record.egress()),
                         FrameVerdict::Admit
                     ),
                     "the admit of {}:{} from {} is not the source's own row's \
@@ -15092,7 +15092,7 @@ mod tests {
         // is admitted by web's row the same as any resolution web's own
         // traffic would carry. It buys no reach — the flow frames behind it
         // are what the rows bound, each on its own.
-        let spoofed_arp = sessions::core::egress::summarize(&arp_frame(LEASE));
+        let spoofed_arp = boxes::core::egress::summarize(&arp_frame(LEASE));
         assert!(matches!(
             gate_verdict(
                 &spoofed_arp,
@@ -15140,7 +15140,7 @@ mod tests {
         // interim node row decides it, and the row allows all, so the frame
         // is admitted by [`GateAdmit::Row`]: the enumeration's compiled set,
         // which admits no such destination, decided nothing here.
-        let summarize = sessions::core::egress::summarize;
+        let summarize = boxes::core::egress::summarize;
         let node_frame = summarize(&ipv4_frame(
             SUBNET.daemon_ip().octets(),
             6,
@@ -15181,7 +15181,7 @@ mod tests {
         let baseline = NodePlaneBaseline::built_in(SUBNET);
         assert_eq!(baseline.phase(), NodeBaselinePhase::Announced);
         let pins = dns_pins::DnsPins::new(SUBNET);
-        let summarize = sessions::core::egress::summarize;
+        let summarize = boxes::core::egress::summarize;
         let alias = SUBNET.host_alias().octets();
 
         let node_frame = summarize(&ipv4_frame(SUBNET.daemon_ip().octets(), 6, alias, 18081));
@@ -15901,7 +15901,7 @@ mod tests {
                 [100, 64, 0, 9],
                 18080,
                 super::egress::IPPROTO_TCP,
-                sessions::core::switch_request::Applied::Row
+                boxes::core::switch_request::Applied::Row
             ),
             Ok(true)
         );
@@ -15911,7 +15911,7 @@ mod tests {
                 [100, 64, 0, 10],
                 18081,
                 super::egress::IPPROTO_UDP,
-                sessions::core::switch_request::Applied::Row
+                boxes::core::switch_request::Applied::Row
             ),
             Ok(true)
         );
@@ -15978,7 +15978,7 @@ mod tests {
                     addr,
                     18080,
                     tcp,
-                    sessions::core::switch_request::Applied::Row
+                    boxes::core::switch_request::Applied::Row
                 ),
                 Ok(true)
             );
@@ -15990,7 +15990,7 @@ mod tests {
                 addr,
                 18080,
                 tcp,
-                sessions::core::switch_request::Applied::Row
+                boxes::core::switch_request::Applied::Row
             ),
             Err(super::LedgerFull),
             "the publish past the bound is refused"
@@ -16010,7 +16010,7 @@ mod tests {
                 addr,
                 18080,
                 tcp,
-                sessions::core::switch_request::Applied::Row
+                boxes::core::switch_request::Applied::Row
             ),
             Ok(false),
             "a held listener is answered as held, not refused"
@@ -16022,7 +16022,7 @@ mod tests {
                 addr,
                 18080,
                 tcp,
-                sessions::core::switch_request::Applied::Row
+                boxes::core::switch_request::Applied::Row
             ),
             Ok(true)
         );
@@ -16036,7 +16036,7 @@ mod tests {
     /// full row-held side refuses only row-held publishes.
     #[test]
     fn interim_publishes_never_block_a_row_held_publish() {
-        use sessions::core::switch_request::Applied;
+        use boxes::core::switch_request::Applied;
         let tcp = super::egress::IPPROTO_TCP;
         let rowless = [100, 64, 0, 20];
         let row_addr = [100, 64, 0, 9];
@@ -16099,7 +16099,7 @@ mod tests {
                 addr,
                 18080,
                 tcp,
-                sessions::core::switch_request::Applied::Row
+                boxes::core::switch_request::Applied::Row
             ),
             Ok(true)
         );
@@ -16109,7 +16109,7 @@ mod tests {
                 addr,
                 18080,
                 tcp,
-                sessions::core::switch_request::Applied::Row
+                boxes::core::switch_request::Applied::Row
             ),
             Ok(true)
         );
@@ -16119,7 +16119,7 @@ mod tests {
                 addr,
                 18080,
                 super::egress::IPPROTO_UDP,
-                sessions::core::switch_request::Applied::Row
+                boxes::core::switch_request::Applied::Row
             ),
             Ok(true)
         );
@@ -16275,7 +16275,7 @@ mod tests {
         registry.register(
             BoxRegistration::new("web", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
-                .with_dynamic_ingress(sessions::DynamicIngress::Allow, Some((3000, 3999))),
+                .with_dynamic_ingress(boxes::DynamicIngress::Allow, Some((3000, 3999))),
         );
         let mut h = gate_connected(registry.clone()).await;
 
@@ -16287,7 +16287,7 @@ mod tests {
             .admit_runtime_port(
                 Ipv4Addr::from(LEASE),
                 3000,
-                sessions::IpProto::Tcp,
+                boxes::IpProto::Tcp,
                 std::time::Instant::now(),
             )
             .expect("the report is inside the grant the row holds");
@@ -16350,7 +16350,7 @@ mod tests {
         // inside the drops' rate window, so its warn line is the window's to
         // keep — the proof is behavioural: nothing of the publish reaches
         // the switch, and the guest's side comes down.
-        registry.withdraw_runtime_port(Ipv4Addr::from(LEASE), 3000, sessions::IpProto::Tcp);
+        registry.withdraw_runtime_port(Ipv4Addr::from(LEASE), 3000, boxes::IpProto::Tcp);
         let row = h
             .table
             .by_source(LEASE)
@@ -16387,14 +16387,14 @@ mod tests {
         let registry = BoxRegistry::new(SUBNET);
         registry.register(
             BoxRegistration::new("web", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
-                .with_dynamic_ingress(sessions::DynamicIngress::Allow, Some((3000, 3999))),
+                .with_dynamic_ingress(boxes::DynamicIngress::Allow, Some((3000, 3999))),
         );
         let mut h = gate_connected(registry.clone()).await;
         registry
             .admit_runtime_port(
                 Ipv4Addr::from(LEASE),
                 3000,
-                sessions::IpProto::Udp,
+                boxes::IpProto::Udp,
                 std::time::Instant::now(),
             )
             .expect("the udp report is inside the grant the row holds");
@@ -16610,7 +16610,7 @@ mod tests {
             BoxRegistration::new("weather", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["203.0.113.0/24".to_string()]),
                     allow_dns_hosts: Some(vec!["example.com".to_string()]),
                     deny_subnets: None,
@@ -16863,7 +16863,7 @@ mod tests {
         registry.register(
             BoxRegistration::new("weather", Ipv4Addr::from(lister), Ipv4Addr::LOCALHOST)
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(Vec::new()),
                     allow_dns_hosts: Some(vec!["example.com".to_string()]),
                     deny_subnets: None,
@@ -17011,7 +17011,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             8080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         // ~10 MB of frames — far past the queue's budget — pushed from the
         // switch side. The push must complete: the relay's reader keeps
@@ -17122,7 +17122,7 @@ mod tests {
                 40000,
                 Ipv4Addr::from(LEASE),
                 8080 + round % 7,
-                sessions::core::egress::TCP_SYN,
+                boxes::core::egress::TCP_SYN,
             );
             send_frame(&mut h.switch, &frame).await;
             assert_eq!(
@@ -17184,7 +17184,7 @@ mod tests {
             BoxRegistration::new("weather", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["203.0.113.0/24".to_string()]),
                     allow_dns_hosts: Some(vec!["example.com".to_string()]),
                     deny_subnets: None,
@@ -17215,7 +17215,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             8080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         let rounds = 10 * 1024 * 1024 / (filler.len() + 2);
         assert!(
@@ -17274,7 +17274,7 @@ mod tests {
             BoxRegistration::new("weather", Ipv4Addr::from(LEASE), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8080])
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["203.0.113.0/24".to_string()]),
                     allow_dns_hosts: Some(vec!["example.com".to_string()]),
                     deny_subnets: None,
@@ -17377,7 +17377,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             9999,
-            sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_ACK,
         );
         let rounds = 10 * 1024 * 1024 / (filler.len() + 2);
         assert!(
@@ -17393,7 +17393,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             18080,
-            sessions::core::egress::TCP_SYN,
+            boxes::core::egress::TCP_SYN,
         );
         send_frame(&mut switch, &dial).await;
         assert!(
@@ -17449,7 +17449,7 @@ mod tests {
             BoxRegistration::new("api", Ipv4Addr::from(OTHER), Ipv4Addr::LOCALHOST)
                 .with_admitted_ports([8081])
                 .with_egress_policy(EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["10.0.0.0/8".to_string()]),
                     allow_dns_hosts: None,
                     deny_subnets: None,
@@ -17464,7 +17464,7 @@ mod tests {
             40000,
             Ipv4Addr::from(LEASE),
             8080,
-            sessions::core::egress::TCP_ACK,
+            boxes::core::egress::TCP_ACK,
         );
         let rounds = 10 * 1024 * 1024 / (inbound.len() + 2);
         assert!(
@@ -17487,7 +17487,7 @@ mod tests {
                 40000,
                 Ipv4Addr::from(OTHER),
                 8081,
-                sessions::core::egress::TCP_ACK,
+                boxes::core::egress::TCP_ACK,
             );
             send_frame(&mut other_switch, &ingress).await;
             assert_eq!(
@@ -17638,7 +17638,7 @@ mod tests {
                     40000,
                     Ipv4Addr::from(LEASE),
                     8080,
-                    sessions::core::egress::TCP_ACK,
+                    boxes::core::egress::TCP_ACK,
                 ))
             })
             .collect();

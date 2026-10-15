@@ -1631,7 +1631,7 @@ fn withdraw_box(
 fn hold_box_name(
     boxes: &BoxRegistry,
     name: &str,
-    session_id: Option<sessions::SessionId>,
+    session_id: Option<boxes::SessionId>,
 ) -> BoxControlReply {
     boxes.hold_box_name(name, session_id);
     BoxControlReply::NameHeld {
@@ -1647,7 +1647,7 @@ fn hold_box_name(
 fn release_box_name(
     boxes: &BoxRegistry,
     name: &str,
-    session_id: Option<sessions::SessionId>,
+    session_id: Option<boxes::SessionId>,
 ) -> BoxControlReply {
     boxes.release_held_name(name, session_id);
     BoxControlReply::NameHeld {
@@ -3071,8 +3071,8 @@ mod tests {
                 &RegisterBoxRequest {
                     name: "web".to_string(),
                     ingress_ports: vec![8080, 9090],
-                    egress: Some(sessions::EgressPolicy {
-                        allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    egress: Some(boxes::EgressPolicy {
+                        allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                         allow_subnets: Some(vec!["10.0.0.0/8".to_string()]),
                         allow_dns_hosts: None,
                         deny_subnets: None,
@@ -3216,8 +3216,8 @@ mod tests {
             .register_client_box(ClientBoxSpec {
                 name: "web".to_string(),
                 ingress_ports: vec![8080],
-                egress: Some(sessions::EgressPolicy {
-                    allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                egress: Some(boxes::EgressPolicy {
+                    allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                     allow_subnets: Some(vec!["10.0.0.0/8".to_string()]),
                     allow_dns_hosts: None,
                     deny_subnets: None,
@@ -3243,10 +3243,10 @@ mod tests {
             [10, 0, 0, 1],
             80,
         );
-        let summary = sessions::core::egress::summarize(&frame);
-        let verdict = sessions::core::egress::verdict(&summary, row.egress());
+        let summary = boxes::core::egress::summarize(&frame);
+        let verdict = boxes::core::egress::verdict(&summary, row.egress());
         assert!(
-            matches!(verdict, sessions::core::egress::FrameVerdict::Admit),
+            matches!(verdict, boxes::core::egress::FrameVerdict::Admit),
             "the compiled policy admits what the declaration allows, got {verdict:?}"
         );
         let outside = crate::net::egress_gate::test_support::ipv4_frame(
@@ -3255,11 +3255,11 @@ mod tests {
             [203, 0, 113, 7],
             443,
         );
-        let outside_summary = sessions::core::egress::summarize(&outside);
+        let outside_summary = boxes::core::egress::summarize(&outside);
         assert!(
             matches!(
-                sessions::core::egress::verdict(&outside_summary, row.egress()),
-                sessions::core::egress::FrameVerdict::Drop(_)
+                boxes::core::egress::verdict(&outside_summary, row.egress()),
+                boxes::core::egress::FrameVerdict::Drop(_)
             ),
             "the compiled policy drops what the declaration does not allow"
         );
@@ -3379,8 +3379,8 @@ mod tests {
                 &RegisterBoxRequest {
                     name: "web".to_string(),
                     ingress_ports: vec![8080],
-                    egress: Some(sessions::EgressPolicy {
-                        allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    egress: Some(boxes::EgressPolicy {
+                        allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                         allow_subnets: Some(vec!["10.0.0.0/8".to_string()]),
                         allow_dns_hosts: None,
                         deny_subnets: None,
@@ -3501,8 +3501,8 @@ mod tests {
                 &RegisterBoxRequest {
                     name: "db".to_string(),
                     ingress_ports: Vec::new(),
-                    egress: Some(sessions::EgressPolicy {
-                        allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    egress: Some(boxes::EgressPolicy {
+                        allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                         allow_subnets: Some(vec!["10.0.0.0/8".to_string()]),
                         allow_dns_hosts: None,
                         deny_subnets: None,
@@ -3813,7 +3813,7 @@ mod tests {
         );
         assert_eq!(
             held_row(&registry),
-            Some(sessions::core::zone_answer::ZoneRow {
+            Some(boxes::core::zone_answer::ZoneRow {
                 address: None,
                 live: true,
             }),
@@ -3856,9 +3856,9 @@ mod tests {
         let (sock_path, _server, registry, _answerer, _proxy_publish) =
             spawn_server(dir.path()).expect("server binds");
         let guest = sock_path.with_file_name(GUEST_CONTROL_SOCK_FILE);
-        let owner = sessions::SessionId::parse_str("00000000-0000-4000-8000-000000000001")
+        let owner = boxes::SessionId::parse_str("00000000-0000-4000-8000-000000000001")
             .expect("a session id");
-        let other = sessions::SessionId::parse_str("00000000-0000-4000-8000-000000000002")
+        let other = boxes::SessionId::parse_str("00000000-0000-4000-8000-000000000002")
             .expect("a session id");
         let in_zone = |name: &str| {
             registry
@@ -3922,9 +3922,9 @@ mod tests {
         use crate::box_registry::{HELD_NAME_RECONFIRM_BOUND, REGISTRY_FILE};
         let dir = tempfile::TempDir::new().expect("temp dir");
         let registry_file = dir.path().join(REGISTRY_FILE);
-        let gone = sessions::SessionId::parse_str("00000000-0000-4000-8000-000000000001")
+        let gone = boxes::SessionId::parse_str("00000000-0000-4000-8000-000000000001")
             .expect("a session id");
-        let live = sessions::SessionId::parse_str("00000000-0000-4000-8000-000000000002")
+        let live = boxes::SessionId::parse_str("00000000-0000-4000-8000-000000000002")
             .expect("a session id");
         let before = BoxRegistry::new(SUBNET).persisting_to(registry_file.clone());
         assert!(before.hold_box_name("old", Some(gone)));
@@ -4333,14 +4333,14 @@ mod tests {
                 &RegisterBoxRequest {
                     name: "web".to_string(),
                     ingress_ports: vec![8080, 9090],
-                    egress: Some(sessions::EgressPolicy {
-                        allow_protocols: Some(vec![sessions::IpProto::Tcp]),
+                    egress: Some(boxes::EgressPolicy {
+                        allow_protocols: Some(vec![boxes::IpProto::Tcp]),
                         allow_subnets: Some(vec!["10.0.0.0/8".to_string()]),
                         allow_dns_hosts: None,
                         deny_subnets: None,
                     }),
                     credentialed_upstream: None,
-                    dynamic_ingress: Some(sessions::DynamicIngress::Allow),
+                    dynamic_ingress: Some(boxes::DynamicIngress::Allow),
                     dynamic_allowed_range: Some((3000, 3999)),
                     hold: false,
                     task_slots: 0,
@@ -4356,7 +4356,7 @@ mod tests {
             &BoxControlRequest::AdmitPort(AdmitPortRequest {
                 switch_address: web.switch_address,
                 port: 3000,
-                proto: sessions::IpProto::Tcp,
+                proto: boxes::IpProto::Tcp,
                 source: PortReportSource::Expose,
             }),
         )
@@ -4366,7 +4366,7 @@ mod tests {
                 recorded,
                 BoxControlReply::PortRecorded {
                     port: 3000,
-                    proto: sessions::IpProto::Tcp
+                    proto: boxes::IpProto::Tcp
                 }
             ),
             "a report within the grant is answered with the recorded port, got {recorded:?}"
@@ -4451,7 +4451,7 @@ mod tests {
             &AdmitPortRequest {
                 switch_address: record.switch_addr(),
                 port: 3000,
-                proto: sessions::IpProto::Tcp,
+                proto: boxes::IpProto::Tcp,
                 source: PortReportSource::Expose,
             },
         );
@@ -4631,7 +4631,7 @@ mod tests {
                     ingress_ports: Vec::new(),
                     egress: None,
                     credentialed_upstream: None,
-                    dynamic_ingress: Some(sessions::DynamicIngress::Allow),
+                    dynamic_ingress: Some(boxes::DynamicIngress::Allow),
                     dynamic_allowed_range: Some((3000, 3999)),
                     hold: false,
                     task_slots: 0,
@@ -4661,7 +4661,7 @@ mod tests {
             &BoxControlRequest::AdmitPort(AdmitPortRequest {
                 switch_address: web.switch_address,
                 port: 3000,
-                proto: sessions::IpProto::Tcp,
+                proto: boxes::IpProto::Tcp,
                 source: PortReportSource::Listen,
             }),
         )
@@ -4845,7 +4845,7 @@ mod tests {
                         ingress_ports: Vec::new(),
                         egress: None,
                         credentialed_upstream: None,
-                        dynamic_ingress: Some(sessions::DynamicIngress::Ask),
+                        dynamic_ingress: Some(boxes::DynamicIngress::Ask),
                         dynamic_allowed_range: Some((ASK_PORT, ASK_PORT + 999)),
                         hold: false,
                         task_slots: 0,
@@ -4953,7 +4953,7 @@ mod tests {
             &BoxControlRequest::AdmitAsk(AdmitAskRequest {
                 switch_address: web.switch_address,
                 port,
-                proto: sessions::IpProto::Tcp,
+                proto: boxes::IpProto::Tcp,
             }),
         )
     }
@@ -5008,7 +5008,7 @@ mod tests {
             AskAdmitOutcome::Admitted {
                 ask_id: offer.ask_id,
                 port: ASK_PORT,
-                proto: sessions::IpProto::Tcp
+                proto: boxes::IpProto::Tcp
             }
         );
         assert_eq!(host.runtime_ports("web"), vec![ASK_PORT]);
@@ -5026,7 +5026,7 @@ mod tests {
             &BoxControlRequest::AdmitPort(AdmitPortRequest {
                 switch_address: web.switch_address,
                 port: ASK_PORT,
-                proto: sessions::IpProto::Tcp,
+                proto: boxes::IpProto::Tcp,
                 source: PortReportSource::Ask,
             }),
         )
@@ -5466,7 +5466,7 @@ mod tests {
             BoxControlReply::AskAlreadyEnded {
                 ask_id: offer.ask_id,
                 port: ASK_PORT,
-                proto: sessions::IpProto::Tcp,
+                proto: boxes::IpProto::Tcp,
                 already_ended: minimald_rpc::AskLateEnd::Denied,
             }
         );
@@ -5735,13 +5735,13 @@ mod tests {
             AdmitPortRequest {
                 switch_address: web.switch_address,
                 port: 3000,
-                proto: sessions::IpProto::Tcp,
+                proto: boxes::IpProto::Tcp,
                 source: PortReportSource::Expose,
             },
             WithdrawPortRequest {
                 switch_address: web.switch_address,
                 port: 3000,
-                proto: sessions::IpProto::Tcp,
+                proto: boxes::IpProto::Tcp,
                 source: PortReportSource::Expose,
             },
         )
@@ -5757,7 +5757,7 @@ mod tests {
                     ingress_ports: Vec::new(),
                     egress: None,
                     credentialed_upstream: None,
-                    dynamic_ingress: Some(sessions::DynamicIngress::Allow),
+                    dynamic_ingress: Some(boxes::DynamicIngress::Allow),
                     dynamic_allowed_range: Some((3000, 3999)),
                     hold: false,
                     task_slots: 0,

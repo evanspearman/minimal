@@ -242,7 +242,7 @@ pub struct EnvArgs {
     /// The owning session's id, for the helper channel's request spans
     /// (`session.id`), beside the box id: host-side facts about who is
     /// asking, never read from the request.
-    session_id: Option<sessions::SessionId>,
+    session_id: Option<boxes::SessionId>,
     /// When true (default), [`Env::build`] consumes package
     /// [`SetupForPackages`] output for `env_vars`/`fs_mappings`.
     /// When false, the caller supplies both via `env_vars` /
@@ -293,7 +293,7 @@ impl EnvArgs {
     /// served in a span that carries `session.id` (the host's knowledge of
     /// the asker, beside `box.id`).
     #[must_use]
-    pub fn with_session_id(mut self, session_id: sessions::SessionId) -> Self {
+    pub fn with_session_id(mut self, session_id: boxes::SessionId) -> Self {
         self.session_id = Some(session_id);
         self
     }
@@ -902,7 +902,7 @@ struct SessionChannel {
     box_id: String,
     /// The owning session's id ([`EnvArgs::with_session_id`]); `None` for
     /// an env built without one (tests).
-    session_id: Option<sessions::SessionId>,
+    session_id: Option<boxes::SessionId>,
     ot: Option<OpTracker>,
     /// Weak handle to the owning session actor, used by session-scoped commands
     /// (e.g. `min build`) to drive side-ops.
@@ -936,7 +936,7 @@ struct SessionChannel {
 fn channel_request_span<'a>(
     line: &'a str,
     box_id: &str,
-    session_id: Option<sessions::SessionId>,
+    session_id: Option<boxes::SessionId>,
 ) -> (tracing::Span, &'a str) {
     let (traceparent, request) = match line.split_once('%') {
         Some(("traceparent", rest)) => match rest.split_once('%') {
@@ -1492,12 +1492,8 @@ impl SessionChannel {
             let record = session.record().await.map_err(gone)?;
             let switch = session.net_switch().await.map_err(gone)?;
             let opt_out = session.deny_all_opt_out().await.map_err(gone)?;
-            let network = crate::exec::task_network(
-                &record,
-                &switch,
-                sessions::EGRESS_DEFAULT_PHASE,
-                opt_out,
-            );
+            let network =
+                crate::exec::task_network(&record, &switch, boxes::EGRESS_DEFAULT_PHASE, opt_out);
             let mut env = ctx
                 .make_env_with_network(
                     task_name,
@@ -1816,7 +1812,7 @@ impl SessionChannel {
                                 record.name.unwrap_or_else(|| self.name.clone()),
                                 record.network,
                             ),
-                            Err(_) => (self.name.clone(), sessions::NetworkMode::OwnIp),
+                            Err(_) => (self.name.clone(), boxes::NetworkMode::OwnIp),
                         };
                         let text = refusal.for_caller(&box_name, network, port_number);
                         if matches!(
@@ -2245,7 +2241,7 @@ mod tests {
         let log = crate::test_harness::SpanLog::default();
         let _g = tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
         let session_id =
-            sessions::SessionId::parse_str("7b3e1f2a-9c4d-4e5f-8a6b-1c2d3e4f5a6b").unwrap();
+            boxes::SessionId::parse_str("7b3e1f2a-9c4d-4e5f-8a6b-1c2d3e4f5a6b").unwrap();
         let tp = "00-af79b928d8ae574b659f1fbf40208758-ed105930ec67df47-01";
         let line = format!("traceparent%{tp}%net-expose%8770");
         let (span, request) = super::channel_request_span(&line, "leaf-7", Some(session_id));
@@ -3257,7 +3253,7 @@ exit $rc
         let server = crate::test_harness::TestServer::new().await;
         let mut client = server.connect().await;
         let mut request = crate::test_harness::create_session_req("web", "/uwu");
-        request.config.network = sessions::NetworkMode::NoNet;
+        request.config.network = boxes::NetworkMode::NoNet;
         let id = client.call::<CreateSession>(&request).await.unwrap().id;
         crate::test_harness::unwrap_ready(
             client
@@ -3303,7 +3299,7 @@ exit $rc
             "web",
             std::net::Ipv4Addr::new(100, 64, 128, 53),
             std::net::Ipv4Addr::new(127, 0, 64, 53),
-            Some(sessions::DynamicIngress::Ask),
+            Some(boxes::DynamicIngress::Ask),
             Some((3000, 3999)),
         )
         .await;
@@ -3373,7 +3369,7 @@ exit $rc
             "web",
             std::net::Ipv4Addr::new(100, 64, 128, 61),
             std::net::Ipv4Addr::new(127, 0, 64, 61),
-            Some(sessions::DynamicIngress::Allow),
+            Some(boxes::DynamicIngress::Allow),
             Some((3000, 3999)),
         )
         .await;
@@ -3407,10 +3403,10 @@ exit $rc
             .policy;
         assert_eq!(
             policy_at_create.ingress,
-            Some(sessions::IngressPolicy {
+            Some(boxes::IngressPolicy {
                 port_mappings: vec![],
                 dynamic_allowed_range: Some((3000, 3999)),
-                dynamic_ingress: Some(sessions::DynamicIngress::Allow),
+                dynamic_ingress: Some(boxes::DynamicIngress::Allow),
             }),
             "the harness box is the one this test's stance describes"
         );

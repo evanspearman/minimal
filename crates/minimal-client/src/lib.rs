@@ -316,7 +316,7 @@ impl Client {
     /// handshake deadline, RPC vocabulary — is [`Client::connect`].
     pub async fn connect_scoped(
         sock_path: &Path,
-        session: sessions::SessionId,
+        session: boxes::SessionId,
     ) -> Result<Self, anyhow::Error> {
         Self::connect_as(sock_path, &session.to_string()).await
     }
@@ -597,7 +597,7 @@ impl Client {
     /// exactly as before.
     pub async fn open_session_exec_channel(
         &mut self,
-        session_id: sessions::SessionId,
+        session_id: boxes::SessionId,
         command: &str,
         task_env: &minimald_rpc::taskenv::TaskEnv,
     ) -> Result<russh::Channel<russh::client::Msg>, anyhow::Error> {
@@ -606,7 +606,7 @@ impl Client {
 
     async fn exec_channel(
         &mut self,
-        session_id: Option<sessions::SessionId>,
+        session_id: Option<boxes::SessionId>,
         command: &str,
         task_env: &minimald_rpc::taskenv::TaskEnv,
     ) -> Result<russh::Channel<russh::client::Msg>, anyhow::Error> {
@@ -672,7 +672,7 @@ impl Client {
     /// channel so the daemon can scope the upload to the correct session.
     pub async fn upload_workspace_files(
         &mut self,
-        session_id: sessions::SessionId,
+        session_id: boxes::SessionId,
         dir: &Path,
     ) -> Result<(), anyhow::Error> {
         // Spinner-style bar: workspace file counts vary (and pre-walking to
@@ -693,7 +693,7 @@ impl Client {
     /// where a progress bar would corrupt the frame.
     pub async fn upload_workspace_files_quiet(
         &mut self,
-        session_id: sessions::SessionId,
+        session_id: boxes::SessionId,
         dir: &Path,
     ) -> Result<(), anyhow::Error> {
         // A hidden bar that is never added to the global MultiProgress
@@ -705,7 +705,7 @@ impl Client {
 
     async fn upload_workspace_files_with(
         &mut self,
-        session_id: sessions::SessionId,
+        session_id: boxes::SessionId,
         dir: &Path,
         bar: &indicatif::ProgressBar,
     ) -> Result<(), anyhow::Error> {
@@ -752,10 +752,10 @@ impl Client {
     /// and takes a `chmod` to edit in the box. The daemon masks off
     /// setuid/setgid/sticky on unpack.
     ///
-    /// [`Composition`]: sessions::core::compose::Composition
+    /// [`Composition`]: boxes::core::compose::Composition
     pub async fn upload_patches(
         &mut self,
-        session_id: sessions::SessionId,
+        session_id: boxes::SessionId,
         patches: &[(std::path::PathBuf, paths::SandboxRelPath)],
     ) -> Result<(), anyhow::Error> {
         if patches.is_empty() {
@@ -777,7 +777,7 @@ impl Client {
     /// where a progress bar would corrupt the frame.
     pub async fn upload_patches_quiet(
         &mut self,
-        session_id: sessions::SessionId,
+        session_id: boxes::SessionId,
         patches: &[(std::path::PathBuf, paths::SandboxRelPath)],
     ) -> Result<(), anyhow::Error> {
         if patches.is_empty() {
@@ -791,7 +791,7 @@ impl Client {
 
     async fn upload_patches_with(
         &mut self,
-        session_id: sessions::SessionId,
+        session_id: boxes::SessionId,
         patches: &[(std::path::PathBuf, paths::SandboxRelPath)],
         bar: &indicatif::ProgressBar,
     ) -> Result<(), anyhow::Error> {
@@ -859,7 +859,7 @@ impl Client {
     /// which unpacks each entry under `<workspace>/hooks/<staged>`.
     ///
     /// `scripts` comes from
-    /// [`stage_external_scripts`](sessions::client::hookscripts::stage_external_scripts),
+    /// [`stage_external_scripts`](boxes::client::hookscripts::stage_external_scripts),
     /// which has already resolved every path against its anchor and
     /// refused anything symlinked or outside it. An empty list is a
     /// no-op — no channel is opened, and no hooks-ready marker is
@@ -875,8 +875,8 @@ impl Client {
     /// is not where scripts belong.
     pub async fn upload_hook_scripts(
         &mut self,
-        session_id: sessions::SessionId,
-        scripts: &[sessions::client::hookscripts::StagedScript],
+        session_id: boxes::SessionId,
+        scripts: &[boxes::client::hookscripts::StagedScript],
     ) -> Result<(), anyhow::Error> {
         if scripts.is_empty() {
             return Ok(());
@@ -935,7 +935,7 @@ impl Client {
     /// surface any stderr the daemon relayed.
     async fn stream_upload<F>(
         &mut self,
-        session_id: sessions::SessionId,
+        session_id: boxes::SessionId,
         subsystem: &'static str,
         what: &'static str,
         stream: F,
@@ -1208,7 +1208,7 @@ fn skew_override_set() -> bool {
 /// this one function, then [`dedup_patch_uploads`] before the upload.
 #[must_use]
 pub fn contribution_patch_uploads(
-    contribution: &sessions::wire::request::WireContribution,
+    contribution: &boxes::wire::request::WireContribution,
 ) -> Vec<(std::path::PathBuf, paths::SandboxRelPath)> {
     contribution
         .patches
@@ -2117,13 +2117,13 @@ mod tests {
 
     /// A wire patch from a user loadout, as `compose_user_contribution`
     /// emits one.
-    fn wire_patch(host: &str, dest: &str) -> sessions::wire::primitives::WireSessionPatch {
-        sessions::wire::primitives::WireSessionPatch {
-            patch: sessions::wire::primitives::WireResolvedPatch {
+    fn wire_patch(host: &str, dest: &str) -> boxes::wire::primitives::WireSessionPatch {
+        boxes::wire::primitives::WireSessionPatch {
+            patch: boxes::wire::primitives::WireResolvedPatch {
                 host_path: paths::HostAbsPath::try_new(host).unwrap(),
                 destination: paths::SandboxRelPath::try_new(dest).unwrap(),
             },
-            source: sessions::wire::primitives::WireSource::UserLoadout {
+            source: boxes::wire::primitives::WireSource::UserLoadout {
                 name: "dev".to_string(),
             },
         }
@@ -2136,7 +2136,7 @@ mod tests {
     /// no-op.
     #[test]
     fn patch_uploads_map_sort_and_dedup_by_destination() {
-        let contribution = sessions::wire::request::WireContribution {
+        let contribution = boxes::wire::request::WireContribution {
             patches: vec![
                 wire_patch("/tmp/first.patch", "zeta/first.patch"),
                 wire_patch("/tmp/second.patch", "alpha/second.patch"),
@@ -2161,7 +2161,7 @@ mod tests {
             "sorted by destination, duplicates collapsed"
         );
         assert!(
-            super::contribution_patch_uploads(&sessions::wire::request::WireContribution::default())
+            super::contribution_patch_uploads(&boxes::wire::request::WireContribution::default())
                 .is_empty(),
             "a patchless composition uploads nothing"
         );
