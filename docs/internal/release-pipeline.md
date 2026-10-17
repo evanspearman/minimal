@@ -146,10 +146,11 @@ the commit descends from. The release notes and `just check-version` find the
 previous release the same way. Without the merge, they all keep counting from
 the previous release.
 
-The promotion created the tag on GitHub, so fetch it first:
+The promotion created the tag on GitHub, so fetch it first. `--force`
+replaces a stale local tag of the same name:
 
 ```sh
-git fetch origin main tag vX.Y.Z
+git fetch --force origin main tag vX.Y.Z
 git merge-base --is-ancestor vX.Y.Z origin/main && echo "already on main"
 ```
 
