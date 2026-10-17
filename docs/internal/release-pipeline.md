@@ -146,17 +146,34 @@ the commit descends from. The release notes and `just check-version` find the
 previous release the same way. Without the merge, they all keep counting from
 the previous release.
 
+The promotion created the tag on GitHub, so fetch it first:
+
 ```sh
-git merge-base --is-ancestor vX.Y.Z origin/main || {
-  git switch -c chore/merge-back-X.Y.Z origin/main
-  git merge -s ours vX.Y.Z -m "Merge tag 'vX.Y.Z' into main"
-}
+git fetch origin main tag vX.Y.Z
+git merge-base --is-ancestor vX.Y.Z origin/main && echo "already on main"
 ```
 
-The `ours` strategy keeps the tree of `main` and records only the history.
-That is correct when `main` already has every fix on the branch, so check
-that first. Push the branch, open a PR, and merge it with **Create a merge
-commit**. The other merge buttons drop the link to the tag.
+The merge uses the `ours` strategy, which keeps the tree of `main` and
+records only the history. It drops any change on the branch that `main`
+lacks, so first make sure that `main` has every fix on the branch. List the
+branch commits that have no identical patch on `main`:
+
+```sh
+git cherry -v origin/main vX.Y.Z | grep '^+'
+```
+
+The list holds the version bumps, and also each cherry-pick whose conflicts
+someone resolved by hand. Find the `main` PR for each fix in the list. If a
+fix has no PR on `main`, land it on `main` before you merge the tag. Then
+merge:
+
+```sh
+git switch -c chore/merge-back-X.Y.Z origin/main
+git merge -s ours vX.Y.Z -m "Merge tag 'vX.Y.Z' into main"
+```
+
+Push the branch, open a PR, and merge it with **Create a merge commit**. The
+other merge buttons drop the link to the tag.
 
 Then delete the branch from step 2:
 
