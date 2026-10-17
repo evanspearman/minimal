@@ -138,7 +138,27 @@ on the same run.
 
 ### 7. Clean up
 
-Delete the branch from step 2:
+If the release commit is not on `main`, merge the tag back into `main`
+before you delete the branch. This happens when the branch took commits of
+its own, such as release candidate bumps or cherry-picked fixes. The version
+of every `main` build comes from `git describe`, which finds only tags that
+the commit descends from. The release notes and `just check-version` find the
+previous release the same way. Without the merge, they all keep counting from
+the previous release.
+
+```sh
+git merge-base --is-ancestor vX.Y.Z origin/main || {
+  git switch -c chore/merge-back-X.Y.Z origin/main
+  git merge -s ours vX.Y.Z -m "Merge tag 'vX.Y.Z' into main"
+}
+```
+
+The `ours` strategy keeps the tree of `main` and records only the history.
+That is correct when `main` already has every fix on the branch, so check
+that first. Push the branch, open a PR, and merge it with **Create a merge
+commit**. The other merge buttons drop the link to the tag.
+
+Then delete the branch from step 2:
 
 ```sh
 git push origin --delete release/X.Y.Z
