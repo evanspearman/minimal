@@ -138,7 +138,45 @@ on the same run.
 
 ### 7. Clean up
 
-Delete the branch from step 2:
+If the release commit is not on `main`, merge the tag back into `main`
+before you delete the branch. This happens when the branch took commits of
+its own, such as release candidate bumps or cherry-picked fixes. The version
+of every `main` build comes from `git describe`, which finds only tags that
+the commit descends from. The release notes and `just check-version` find the
+previous release the same way. Without the merge, they all keep counting from
+the previous release.
+
+The promotion created the tag on GitHub, so fetch it first. `--force`
+replaces a stale local tag of the same name:
+
+```sh
+git fetch --force origin main tag vX.Y.Z
+git merge-base --is-ancestor vX.Y.Z origin/main && echo "already on main"
+```
+
+The merge uses the `ours` strategy, which keeps the tree of `main` and
+records only the history. It drops any change on the branch that `main`
+lacks, so first make sure that `main` has every fix on the branch. List the
+branch commits that have no identical patch on `main`:
+
+```sh
+git cherry -v origin/main vX.Y.Z | grep '^+'
+```
+
+The list holds the version bumps, and also each cherry-pick whose conflicts
+someone resolved by hand. Find the `main` PR for each fix in the list. If a
+fix has no PR on `main`, land it on `main` before you merge the tag. Then
+merge:
+
+```sh
+git switch -c chore/merge-back-X.Y.Z origin/main
+git merge -s ours vX.Y.Z -m "Merge tag 'vX.Y.Z' into main"
+```
+
+Push the branch, open a PR, and merge it with **Create a merge commit**. The
+other merge buttons drop the link to the tag.
+
+Then delete the branch from step 2:
 
 ```sh
 git push origin --delete release/X.Y.Z
