@@ -3442,8 +3442,9 @@ impl BoxActor {
                 (crate::audit::DecisionOutcome::Published, None)
             }
             // The one refusal that names a publication: the port is held,
-            // live, by one of the box's two runtime surfaces, and the
-            // reservation that refused the request carried whose — this
+            // pending or published, by one of the box's two runtime
+            // surfaces, and the reservation that refused the request carried
+            // whose — this
             // surface's own on a true duplicate, the listen watcher's when
             // the box's process published first — so the line a diagnostics
             // bundle's log tail reads tells the two apart, without reading
@@ -3802,6 +3803,7 @@ impl BoxActor {
                 return Err(ExposeFailure::Refused(ExposeRefusal::AlreadyPublished {
                     port,
                     owner: held.owner,
+                    pending: !held.published,
                 }));
             }
         };
