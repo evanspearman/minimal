@@ -1474,7 +1474,11 @@ impl BoxManager {
                             .ok_or_else(|| {
                                 std::io::Error::new(
                                     NotFound,
-                                    format!("no session with ID `{}`", id.as_ref()),
+                                    format!(
+                                        "{} `{}`",
+                                        minimald_rpc::UNKNOWN_SESSION_ID_LEAD,
+                                        id.as_ref()
+                                    ),
                                 )
                             })?;
                     // Teardown belongs to the actor, so an idle session gets
