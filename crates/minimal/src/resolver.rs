@@ -2624,13 +2624,18 @@ pub(crate) const UNDO_SHOWN_BY: &str = "min finalize-install --undo --show --scr
 /// file. `chown root:wheel` and the `0755`/`0644` modes then converge both
 /// files to the exact state the custody checks ([`range_step_over`])
 /// verify, whatever a previous attempt or a tampered host left there. The
-/// boot step loads last: `launchctl bootout` of the old unit first —
+/// boot step loads next: `launchctl bootout` of the old unit first —
 /// guarded, because a first run has nothing to boot out — then `bootstrap`
 /// loads the new unit into the system domain, where launchd starts it at
 /// once, asynchronously, so the range appears on the loopback within about
 /// a second of the script returning, and [`RANGE_UNIT_PLIST`]'s `RunAtLoad`
 /// re-applies it at every boot after. A re-run replaces the unit and
 /// re-runs the program rather than dying on a label collision.
+///
+/// Last, the script flushes the system resolver cache
+/// (`dscacheutil -flushcache`, `killall -HUP mDNSResponder`, each
+/// `|| true`), so a negative answer cached before the resolver file existed
+/// does not outlive it.
 ///
 /// Where the step installs the answerer, its verified copy runs before all
 /// of the above ([`macos_names_steps`]): the copy's checks are the ones that
@@ -2690,6 +2695,16 @@ pub(crate) fn macos_names_steps(port: u16, install: Option<&AnswererInstall>) ->
             }
         }
     }
+    // The resolver file and the answerer are in place; configd loads the
+    // file on its own schedule and keeps its negative cache, so ask the
+    // system to re-read the first and drop the second.
+    script.push_str(
+        "\n\
+         # Reload the resolver: the file is read on demand, and cached\n\
+         # negatives from before it existed must not outlive it.\n\
+         dscacheutil -flushcache 2>/dev/null || true\n\
+         killall -HUP mDNSResponder 2>/dev/null || true\n",
+    );
     script
 }
 
@@ -3596,6 +3611,11 @@ fn channel_dir_removal(channel: &str) -> String {
 /// job that is not loaded, a file that is not there — so the script succeeds on a host it already cleaned, or on one
 /// `min finalize-install` never touched. `channel` is the machine-global
 /// channel path the step's plist names.
+///
+/// The removal ends with the same flush the install step ends with: the
+/// resolver's cached answers outlive both the file it read and the answerer
+/// they came from, so taking the zone away also drops what the system
+/// already resolved through it.
 #[cfg(any(test, target_os = "macos"))]
 pub(crate) fn macos_undo_command(channel: &str) -> String {
     let aliases = switch::loopback::range_hosts()
@@ -3624,7 +3644,12 @@ pub(crate) fn macos_undo_command(channel: &str) -> String {
          \n\
          # The resolver file, and its directory when it is empty.\n\
          rm -f {RESOLVER_FILE}\n\
-         rmdir /etc/resolver 2>/dev/null || true\n",
+         rmdir /etc/resolver 2>/dev/null || true\n\
+         \n\
+         # Reload the resolver: the file and the answerer it named are\n\
+         # gone, and what the system cached through them must go too.\n\
+         dscacheutil -flushcache 2>/dev/null || true\n\
+         killall -HUP mDNSResponder 2>/dev/null || true\n",
         header = script_header(MACOS_UNDO_WHAT, UNDO_SHOWN_BY),
         service = macos_service_removal(channel, ""),
         channel_dirs = channel_dir_removal(channel),
@@ -7146,6 +7171,66 @@ exit 0
             "{command}"
         );
         assert!(command.starts_with("#!/bin/sh\n"), "{command}");
+    }
+
+    /// Both macOS scripts end by asking the system to re-read its resolver
+    /// configuration and drop the cache it holds: the install script after
+    /// the answerer is up (configd loads the file on its own schedule, and
+    /// a negative answer cached before the file existed must not stand),
+    /// the undo script after the resolver file is gone (its answers must
+    /// not outlive it). Each line tolerates the tool being absent — the
+    /// scripts must succeed on a host without them, `set -eu` and all.
+    #[cfg(any(test, target_os = "macos"))]
+    #[test]
+    fn macos_scripts_flush_the_system_resolver_cache() {
+        let flush = "dscacheutil -flushcache 2>/dev/null || true";
+        let hup = "killall -HUP mDNSResponder 2>/dev/null || true";
+        // With the answerer step: the flush follows the channel coming up,
+        // so the cache is dropped over a zone the answerer already serves.
+        let install = test_install();
+        let script = macos_names_steps(15353, Some(&install));
+        let up_at = script
+            .rfind("[ -S ")
+            .expect("the script waits on the channel");
+        for line in [flush, hup] {
+            let at = script
+                .find(line)
+                .unwrap_or_else(|| panic!("{line}: {script}"));
+            assert!(
+                up_at < at,
+                "the flush follows the answerer's channel coming up: {script}"
+            );
+        }
+        // Without the answerer step the flush still runs, after the range
+        // unit the script installs.
+        let bare = macos_names_steps(15353, None);
+        let range_at = bare
+            .find(&format!("launchctl bootstrap system {RANGE_PLIST_PATH}"))
+            .expect("the script loads the range unit");
+        for line in [flush, hup] {
+            let at = bare.find(line).unwrap_or_else(|| panic!("{line}: {bare}"));
+            assert!(
+                range_at < at,
+                "the flush follows the range unit's load: {bare}"
+            );
+        }
+        // The undo script flushes after the resolver file and its
+        // directory are gone, so its cached answers do not outlive them.
+        let undo = macos_undo_command(&install.channel);
+        let gone_at = undo
+            .find(&format!("rm -f {RESOLVER_FILE}"))
+            .expect("the undo removes the resolver file")
+            .max(
+                undo.find("rmdir /etc/resolver")
+                    .expect("the undo removes the resolver directory"),
+            );
+        for line in [flush, hup] {
+            let at = undo.find(line).unwrap_or_else(|| panic!("{line}: {undo}"));
+            assert!(
+                gone_at < at,
+                "the flush follows the resolver file's and directory's removal: {undo}"
+            );
+        }
     }
 
     // The answerer's copy can refuse (a directory on its path that fails
