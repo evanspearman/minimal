@@ -18,3 +18,4 @@ pub mod module;
 pub mod publish;
 pub mod redeem;
 pub mod seal;
+pub mod signin;
