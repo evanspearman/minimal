@@ -16,4 +16,5 @@ pub mod ca;
 pub mod keys;
 pub mod module;
 pub mod publish;
+pub mod redeem;
 pub mod seal;
