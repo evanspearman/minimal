@@ -284,6 +284,7 @@ fn every_daemon_connection_is_classified() {
             "cmd/net.rs::cmd_net_forward = gated",
             "cmd/session.rs::cmd_attach = gated",
             "cmd/session.rs::cmd_exec = gated",
+            "cmd/session.rs::cmd_session_display = gated",
             "cmd/session.rs::cmd_session_run = gated",
             "cmd/session.rs::cmd_session_setup_zed = gated",
             // The dashboard's activation is the same multi-step mutation as
@@ -3680,4 +3681,111 @@ fn an_exact_name_wins_and_an_ambiguous_fold_resolves_to_none() {
         match_id_prefix(&entries, "beefcafe").unwrap(),
         Some(entries[2].id)
     );
+}
+
+/// `min session display`'s arguments: the session, `--size`, and the
+/// command after `--`, kept word for word for the host's argv.
+#[test]
+fn session_display_parses_its_size_and_command() {
+    let cli = Cli::try_parse_from([
+        "min",
+        "session",
+        "display",
+        "dev",
+        "--size",
+        "1920x1080",
+        "--",
+        "foot",
+        "-e",
+        "htop",
+    ])
+    .unwrap();
+    let Some(Command::Session(SessionArgs {
+        command: SessionCommand::Display(args),
+    })) = cli.command
+    else {
+        panic!("expected `session display`");
+    };
+    assert_eq!(args.session, "dev");
+    assert_eq!(
+        args.size,
+        Some(DisplaySize {
+            width: 1920,
+            height: 1080
+        })
+    );
+    assert_eq!(args.command, ["foot", "-e", "htop"]);
+
+    let bare = Cli::try_parse_from(["min", "session", "display", "dev"]).unwrap();
+    let Some(Command::Session(SessionArgs {
+        command: SessionCommand::Display(args),
+    })) = bare.command
+    else {
+        panic!("expected `session display`");
+    };
+    assert_eq!((args.size, args.command.len()), (None, 0));
+}
+
+/// The command must follow `--`: a bare word after the session is an
+/// error, not a silently shown command.
+#[test]
+fn session_display_takes_its_command_only_after_a_separator() {
+    assert!(Cli::try_parse_from(["min", "session", "display", "dev", "foot"]).is_err());
+}
+
+#[test]
+fn display_sizes_are_width_x_height_within_bounds() {
+    assert_eq!(
+        "1280x720".parse::<DisplaySize>(),
+        Ok(DisplaySize {
+            width: 1280,
+            height: 720
+        })
+    );
+    assert_eq!(
+        "16x8192".parse::<DisplaySize>().map(|s| s.to_string()),
+        Ok("16x8192".into())
+    );
+    for bad in [
+        "",
+        "1280",
+        "1280x",
+        "x720",
+        "1280X720",
+        "1280x720x1",
+        "-1x720",
+        "a x b",
+    ] {
+        let err = bad.parse::<DisplaySize>().unwrap_err();
+        assert!(err.contains("WIDTHxHEIGHT"), "{bad:?}: {err}");
+    }
+    for small_or_large in ["15x720", "1280x8193", "0x0"] {
+        let err = small_or_large.parse::<DisplaySize>().unwrap_err();
+        assert!(err.contains("from 16 to 8192"), "{small_or_large}: {err}");
+    }
+}
+
+/// The CLI reference documents `session display`, its flag, and what the
+/// box needs.
+#[test]
+fn cli_reference_documents_session_display() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/cli-min.md");
+    let doc = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let section = doc
+        .split_once("### `session display`")
+        .expect("a `session display` section in the CLI reference")
+        .1;
+    let section = section.split("### ").next().unwrap();
+    for needle in [
+        "min session display <SESSION> [--size <WxH>] [-- <CMD>...]",
+        "--size <WxH>",
+        "minimal-display",
+    ] {
+        assert!(
+            section.contains(needle),
+            "the CLI reference's `session display` section must mention `{needle}`"
+        );
+    }
 }

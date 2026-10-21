@@ -303,7 +303,7 @@ mod tests {
                 let start_in = consumed;
                 out.reserve(1024);
                 self.0
-                    .compress_vec(&tiles[..], &mut out, FlushCompress::Sync)
+                    .compress_vec(tiles, &mut out, FlushCompress::Sync)
                     .unwrap();
                 let used = usize::try_from(self.0.total_in()).unwrap() - start_in;
                 if used == tiles.len() && out.len() < out.capacity() {
@@ -369,8 +369,14 @@ mod tests {
         tiles.extend(cpixel(0xbb));
         tiles.extend([0b1010_0000, 0b0100_0000]);
         decode(&tiles, rect(0, 0, 3, 2), &mut fb).unwrap();
-        assert_eq!([fb.get(0, 0), fb.get(1, 0), fb.get(2, 0)], [0xbb, 0xaa, 0xbb]);
-        assert_eq!([fb.get(0, 1), fb.get(1, 1), fb.get(2, 1)], [0xaa, 0xbb, 0xaa]);
+        assert_eq!(
+            [fb.get(0, 0), fb.get(1, 0), fb.get(2, 0)],
+            [0xbb, 0xaa, 0xbb]
+        );
+        assert_eq!(
+            [fb.get(0, 1), fb.get(1, 1), fb.get(2, 1)],
+            [0xaa, 0xbb, 0xaa]
+        );
     }
 
     #[test]

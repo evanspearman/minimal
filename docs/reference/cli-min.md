@@ -488,6 +488,42 @@ first line; `--json` emits the full records.
 Answered from the persisted composition, so it works after a daemon restart
 and for a session nobody is attached to.
 
+### `session display`
+
+```
+min session display <SESSION> [--size <WxH>] [-- <CMD>...]
+```
+
+Opens a window on this machine showing a graphical desktop that runs inside
+`SESSION` (a UUID, unique id prefix, or session name). Keys and the pointer
+in the window go to the desktop. The box needs the `minimal-display`
+package: list it in the session's `packages` in `minimal.toml`.
+
+| Flag | Description |
+|------|-------------|
+| `--size <WxH>` | The desktop's size in pixels, such as `1920x1080`; each side from 16 to 8192. Default: 1280x720 |
+| `-- <CMD>...` | What the desktop shows: a Wayland compositor that can run nested, such as `niri` or `sway`, or a single Wayland app. Default: `niri` |
+
+The desktop runs in the box on a headless compositor with no GPU, and the
+window shows it over the session's SSH connection, with no port opened on
+either side. The window opens at the desktop's size, one desktop pixel per
+screen pixel; resizing the window scales the desktop to fit. The pointer is
+this machine's own, so it moves without waiting for the box.
+
+The Cmd key on a Mac reaches the desktop as Super, the key compositors bind
+their shortcuts to, so Cmd+Q goes to the desktop rather than quitting the
+window.
+
+Closing the window, or Ctrl-C in the terminal that ran the command, stops
+the desktop in the box. When the desktop stops by itself, such as when the
+program it shows exits, the window closes; if the desktop reports an error,
+the command fails and prints the end of its output.
+
+On Linux the window needs a desktop session here: the command fails at once
+when neither `WAYLAND_DISPLAY` nor `DISPLAY` is set. The Linux release
+binary is statically linked and cannot open windows, so there this command
+fails with `This build of min cannot open a display window.`
+
 ### `net forward`
 
 ```

@@ -105,6 +105,51 @@ pub async fn cmd_exec(global: &GlobalArgs, args: ExecArgs) -> Result<(), anyhow:
     session_via_ssh(&sock, r.id, wire, None, None).await
 }
 
+/// Opens a window onto a graphical desktop in a session.
+///
+/// This is phase 1 (see [`crate::display`]): it starts the desktop in the
+/// box and connects to it, then hands the window back to `main` to run on
+/// the process's main thread.
+pub async fn cmd_session_display(
+    global: &GlobalArgs,
+    args: DisplayArgs,
+) -> Result<(), anyhow::Error> {
+    #[cfg(not(all(feature = "display", not(target_env = "musl"))))]
+    {
+        let _ = (global, args);
+        bail!("This build of min cannot open a display window.");
+    }
+    #[cfg(all(feature = "display", not(target_env = "musl")))]
+    {
+        // Checked before anything starts in the box: without a desktop here
+        // the window cannot open, and the box would start one for nothing.
+        #[cfg(target_os = "linux")]
+        if ["WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY"]
+            .iter()
+            .all(|var| std::env::var_os(var).is_none())
+        {
+            bail!(
+                "min session display needs a graphical desktop: WAYLAND_DISPLAY and DISPLAY \
+                 are both unset."
+            );
+        }
+
+        ensure_daemon(global)?;
+        let sock = client::resolve_socket_path(global.minimal_dir.as_deref(), global.use_minvmd())
+            .context("Failed to resolve daemon socket path")?;
+        let mut client = client::Client::connect(&sock)
+            .await
+            .context("Failed to connect to minimald")?;
+        let r = resolve_session_version_gated(&mut client, &args.session).await?;
+        tracing::info!(session_id = %r.id, session_name = ?r.name, "found session");
+
+        let label = session_announce_label(&r.id, r.name.as_deref());
+        let size = args.size.map(|s| (s.width, s.height));
+        let pending = crate::display::prepare(&sock, r.id, label, size, &args.command).await?;
+        Err(DisplayDeferred::new(pending).into())
+    }
+}
+
 /// Runs a task declared by the session's project, in that session.
 ///
 /// The daemon services this itself rather than handing it to the session's

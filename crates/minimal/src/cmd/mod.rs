@@ -43,7 +43,72 @@ pub use net::*;
 pub use project::*;
 pub use session::*;
 
-pub async fn run(cli: Cli) -> Result<(), anyhow::Error> {
+/// How a command finished, for `main` to act on.
+#[derive(Debug)]
+pub enum Ran {
+    /// It is done; the process exits.
+    Done,
+    /// It left a display window for `main` to run on the main thread
+    /// ([`DisplayDeferred::run_on_main_thread`]).
+    Display(DisplayDeferred),
+}
+
+/// `min session display`'s window, waiting for the main thread.
+///
+/// Carried out of the command on the error path, as [`Handoff`] is, but it
+/// is not a hand-off: the command's `cmd` span stays open in it until the
+/// window has closed, so the window's work is part of the command's trace.
+/// The mutex makes it `Sync`, which an error must be; it is only ever taken
+/// once.
+pub struct DisplayDeferred(
+    #[cfg(all(feature = "display", not(target_env = "musl")))]
+    std::sync::Mutex<Option<Box<crate::display::Pending>>>,
+    #[cfg(not(all(feature = "display", not(target_env = "musl"))))] std::convert::Infallible,
+);
+
+impl DisplayDeferred {
+    #[cfg(all(feature = "display", not(target_env = "musl")))]
+    pub(crate) fn new(pending: crate::display::Pending) -> Self {
+        Self(std::sync::Mutex::new(Some(Box::new(pending))))
+    }
+
+    /// Runs the window until it closes, flushes telemetry, and returns the
+    /// exit status. Call it on the process's main thread, with the runtime
+    /// the command ran on.
+    pub fn run_on_main_thread(self, runtime: &tokio::runtime::Runtime) -> std::process::ExitCode {
+        #[cfg(all(feature = "display", not(target_env = "musl")))]
+        {
+            let pending = self
+                .0
+                .into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .expect("a deferred display is run once");
+            crate::display::run_on_main_thread(*pending, runtime)
+        }
+        #[cfg(not(all(feature = "display", not(target_env = "musl"))))]
+        {
+            let _ = runtime;
+            match self.0 {}
+        }
+    }
+}
+
+impl std::fmt::Debug for DisplayDeferred {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DisplayDeferred")
+    }
+}
+
+impl std::fmt::Display for DisplayDeferred {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Only seen if one escapes [`run`], which takes every one back.
+        f.write_str("unfinished display window")
+    }
+}
+
+impl std::error::Error for DisplayDeferred {}
+
+pub async fn run(cli: Cli) -> Result<Ran, anyhow::Error> {
     let root = tracing::info_span!(
         "cmd",
         trace_id = tracing::field::Empty,
@@ -78,9 +143,18 @@ pub async fn run(cli: Cli) -> Result<(), anyhow::Error> {
     // Boxed: inlined, this dispatch match's deepest arm overruns rustc's
     // query depth (128) when computing the future's layout.
     match run_in_root(root, Box::pin(run_command(cli))).await? {
-        None => Ok(()),
-        Some(handoff) => Err(handoff.finish()),
+        Finished::Done => Ok(Ran::Done),
+        Finished::Handoff(handoff) => Err(handoff.finish()),
+        Finished::Display(display) => Ok(Ran::Display(display)),
     }
+}
+
+/// What [`run_in_root`] found the command left behind.
+#[derive(Debug)]
+enum Finished {
+    Done,
+    Handoff(Handoff),
+    Display(DisplayDeferred),
 }
 
 /// What a command leaves for the process to do after its `cmd` span has
@@ -138,7 +212,7 @@ impl Handoff {
 /// Exits with the shell's `128 + signal` only if the signal does not end the
 /// process: its default action could not be restored, or it does not
 /// terminate.
-fn die_of(signal: nix::sys::signal::Signal) -> ! {
+pub(crate) fn die_of(signal: nix::sys::signal::Signal) -> ! {
     use nix::sys::signal::{SigHandler, raise};
     // SAFETY: SIG_DFL installs no handler, so no code of ours can run in
     // signal context; the handler it replaces (tokio's) is never needed again
@@ -155,21 +229,26 @@ fn die_of(signal: nix::sys::signal::Signal) -> ! {
 }
 
 /// Run `command` inside `root`, end `root`, and return the command's
-/// [`Handoff`], if it made one. Any other error is returned as is.
+/// [`Handoff`] or [`DisplayDeferred`], if it made one. Any other error is
+/// returned as is.
 ///
 /// `root` ends when the instrumented future is dropped, at the end of the
 /// `await`, so it has closed (and its exporter has it) by the time a caller
-/// finishes the hand-off.
-async fn run_in_root<F>(root: tracing::Span, command: F) -> Result<Option<Handoff>, anyhow::Error>
+/// finishes the hand-off. A deferred display holds a handle on `root`, which
+/// keeps it open until the window has closed.
+async fn run_in_root<F>(root: tracing::Span, command: F) -> Result<Finished, anyhow::Error>
 where
     F: std::future::Future<Output = Result<(), anyhow::Error>>,
 {
     use tracing::Instrument as _;
     match command.instrument(root).await {
-        Ok(()) => Ok(None),
+        Ok(()) => Ok(Finished::Done),
         Err(e) => match e.downcast::<Handoff>() {
-            Ok(handoff) => Ok(Some(handoff)),
-            Err(e) => Err(e),
+            Ok(handoff) => Ok(Finished::Handoff(handoff)),
+            Err(e) => match e.downcast::<DisplayDeferred>() {
+                Ok(display) => Ok(Finished::Display(display)),
+                Err(e) => Err(e),
+            },
         },
     }
 }
@@ -217,6 +296,7 @@ pub(crate) async fn run_command(cli: Cli) -> Result<(), anyhow::Error> {
             SessionCommand::Policy(args) => cmd_session_policy(&cli.global_args, args).await,
             SessionCommand::SetupZed(args) => cmd_session_setup_zed(&cli.global_args, args).await,
             SessionCommand::Hooks(args) => cmd_session_hooks(&cli.global_args, args).await,
+            SessionCommand::Display(args) => cmd_session_display(&cli.global_args, args).await,
         },
         Some(Command::Loadout(LoadoutArgs {
             command: LoadoutCommand::List(args),
@@ -1323,7 +1403,10 @@ mod handoff_tests {
         })
         .await
         .unwrap();
-        assert!(matches!(handoff, Some(Handoff::Exit(0))), "{handoff:?}");
+        assert!(
+            matches!(handoff, super::Finished::Handoff(Handoff::Exit(0))),
+            "{handoff:?}"
+        );
         assert_eq!(closed_names(&closed), ["client.rpc", "cmd"]);
     }
 
@@ -1338,7 +1421,10 @@ mod handoff_tests {
         })
         .await
         .unwrap();
-        assert!(matches!(handoff, Some(Handoff::Exit(130))), "{handoff:?}");
+        assert!(
+            matches!(handoff, super::Finished::Handoff(Handoff::Exit(130))),
+            "{handoff:?}"
+        );
         assert_eq!(closed_names(&closed), ["cmd"]);
     }
 
@@ -1357,7 +1443,7 @@ mod handoff_tests {
         assert!(
             matches!(
                 handoff,
-                Some(Handoff::Raise(nix::sys::signal::Signal::SIGTERM))
+                super::Finished::Handoff(Handoff::Raise(nix::sys::signal::Signal::SIGTERM))
             ),
             "{handoff:?}"
         );
@@ -1417,7 +1503,7 @@ mod handoff_tests {
         let _guard =
             tracing::subscriber::set_default(tracing_subscriber::registry().with(closed.clone()));
         let ok = run_in_root(tracing::info_span!("cmd"), async { Ok(()) }).await;
-        assert!(matches!(ok, Ok(None)));
+        assert!(matches!(ok, Ok(super::Finished::Done)));
         let err = run_in_root(tracing::info_span!("cmd"), async {
             Err(anyhow::anyhow!("no session found"))
         })

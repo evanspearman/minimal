@@ -19,11 +19,31 @@ fn main() -> ExitCode {
         .var(minimal::COMPLETE_VAR)
         .complete();
 
-    run()
+    // Built by hand rather than with `#[tokio::main]` (which expands to the
+    // same runtime) so that the main thread is free again once `run` returns:
+    // `min session display` hands its window back to run here, where winit
+    // requires it, while its network tasks go on on this runtime's workers.
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("error: could not start min's async runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut display = None;
+    let code = runtime.block_on(run(&mut display));
+    match display {
+        Some(display) => display.run_on_main_thread(&runtime),
+        None => code,
+    }
 }
 
-#[tokio::main]
-async fn run() -> ExitCode {
+/// Runs the command. A command that leaves a window to run puts it in
+/// `display`, and the returned code is not used.
+async fn run(display: &mut Option<minimal::DisplayDeferred>) -> ExitCode {
     // True only when RUST_LOG parsed: a malformed RUST_LOG falls back to the
     // default filter and keeps the plain user-facing format.
     let (filter, rust_log_set) = match EnvFilter::try_from_default_env() {
@@ -149,7 +169,15 @@ async fn run() -> ExitCode {
     // pipe from any other command (e.g. a daemon socket) is a real failure.
     let quiet_on_closed_pipe = matches!(cli.command, Some(minimal::Command::Version));
 
-    let result = minimal::run(cli).await;
+    let result = match minimal::run(cli).await {
+        // The window runs its course in `main`, which flushes after it.
+        Ok(minimal::Ran::Display(deferred)) => {
+            *display = Some(deferred);
+            return ExitCode::SUCCESS;
+        }
+        Ok(minimal::Ran::Done) => Ok(()),
+        Err(e) => Err(e),
+    };
     // Flush exported telemetry (bounded; a no-op when export is off). What
     // the bound cuts off is in the spool already.
     mlog::otel::shutdown(mlog::otel::CLI_EXIT_FLUSH);

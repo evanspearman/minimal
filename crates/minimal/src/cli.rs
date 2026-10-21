@@ -249,6 +249,67 @@ pub enum SessionCommand {
     /// List the lifecycle hooks composed into a session, and where each
     /// was declared
     Hooks(HooksArgs),
+    /// Open a window onto a graphical desktop in a session
+    ///
+    /// Starts a Wayland desktop in the session's box and shows it in a
+    /// window here, with this keyboard and pointer. The box needs the
+    /// `minimal-display` package. The desktop shows niri unless a command is
+    /// given after `--`. Closing the window, or Ctrl-C here, stops the
+    /// desktop.
+    Display(DisplayArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct DisplayArgs {
+    /// Session identifier (UUID, unique id prefix, or session name).
+    #[arg(add = completion::session_completer())]
+    pub session: String,
+    /// The desktop's size in pixels, such as 1920x1080 (default: 1280x720)
+    #[arg(long, value_name = "WxH")]
+    pub size: Option<DisplaySize>,
+    /// What the desktop shows: a compositor that runs nested, such as niri
+    /// or sway, or a single Wayland app (default: niri)
+    #[arg(last = true, value_name = "CMD")]
+    pub command: Vec<String>,
+}
+
+/// A desktop size, `WIDTHxHEIGHT` in pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplaySize {
+    pub width: u16,
+    pub height: u16,
+}
+
+impl DisplaySize {
+    /// The smallest and largest side `--size` accepts.
+    const SIDES: std::ops::RangeInclusive<u16> = 16..=8192;
+}
+
+impl std::str::FromStr for DisplaySize {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let invalid = || format!("expected WIDTHxHEIGHT in pixels, such as 1280x720, not '{s}'");
+        let (width, height) = s.split_once('x').ok_or_else(invalid)?;
+        let width: u16 = width.parse().map_err(|_| invalid())?;
+        let height: u16 = height.parse().map_err(|_| invalid())?;
+        for side in [width, height] {
+            if !Self::SIDES.contains(&side) {
+                return Err(format!(
+                    "each side must be from {} to {} pixels, not {side}",
+                    Self::SIDES.start(),
+                    Self::SIDES.end()
+                ));
+            }
+        }
+        Ok(Self { width, height })
+    }
+}
+
+impl std::fmt::Display for DisplaySize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}x{}", self.width, self.height)
+    }
 }
 
 #[derive(Debug, Args)]

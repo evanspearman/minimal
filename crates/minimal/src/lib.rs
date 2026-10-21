@@ -20,6 +20,11 @@ pub mod task;
 pub mod theme;
 pub mod zed;
 
+/// `min session display`'s window, in builds that can open one: see the
+/// `display` feature.
+#[cfg(all(feature = "display", not(target_env = "musl")))]
+pub mod display;
+
 mod cli;
 pub use cli::*;
 

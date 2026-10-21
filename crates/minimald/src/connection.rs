@@ -726,16 +726,11 @@ impl ConnectionHandler {
                     Err(russh::ChannelOpenFailure::ConnectFailed)
                 }
             },
-            DialSite::InBox => dial_in_box(
-                &session,
-                &uname,
-                InBoxTarget::Tcp {
-                    host: &host,
-                    port,
-                },
-            )
-            .await
-            .map(Upstream::InBox),
+            DialSite::InBox => {
+                dial_in_box(&session, &uname, InBoxTarget::Tcp { host: &host, port })
+                    .await
+                    .map(Upstream::InBox)
+            }
         };
         let upstream = match upstream {
             Ok(upstream) => upstream,
