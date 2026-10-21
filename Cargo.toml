@@ -251,6 +251,13 @@ vt100 = { version = "0.16.2" }
 zeroize = "1"
 zstd = "0.14"
 
+# `min session display`'s window. Linux reaches X11 and Wayland through
+# dlopen, so the CLI links no display library and still starts without one;
+# the `notitle` decorations draw GNOME's client-side frame without a font
+# stack. softbuffer's KMS backend is off: the window is never on a bare tty.
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
+softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
+
 moka = { version = "0.12", default-features = false, features = ["sync"] }
 globset = "0.4"
 walkdir = "2.5"

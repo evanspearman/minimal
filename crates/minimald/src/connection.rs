@@ -541,9 +541,96 @@ impl russh::server::Handler for ConnectionHandler {
         )
         .await
     }
+
+    /// Handles a `direct-streamlocal@openssh.com` channel: a forward to a
+    /// unix socket inside the session's box (NET-143), which is how
+    /// `min session display` reaches the box's VNC server without a TCP port.
+    ///
+    /// The path must pass [`StreamlocalPath`]'s rules (NET-144), and the dial
+    /// always runs inside the box, whatever its network mode: it connects as
+    /// the box, so it reaches nothing the box could not reach already. A
+    /// daemon-side connect would follow a box-controlled symlink in the box's
+    /// `/run` to whatever socket it named, the daemon's own included.
+    async fn channel_open_direct_streamlocal(
+        &mut self,
+        channel: RuChannel<Msg>,
+        socket_path: &str,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let span = streamlocal_span(socket_path);
+        tracing::Instrument::instrument(
+            self.relay_direct_streamlocal(channel, socket_path, reply),
+            span,
+        )
+        .await
+    }
 }
 
 impl ConnectionHandler {
+    /// The `direct-streamlocal` handler's body, run under its span (see
+    /// [`russh::server::Handler::channel_open_direct_streamlocal`] above).
+    async fn relay_direct_streamlocal(
+        &mut self,
+        channel: RuChannel<Msg>,
+        socket_path: &str,
+        reply: ChannelOpenHandle,
+    ) -> Result<(), ConnectionError> {
+        protocol_trace!("Got channel_open_direct_streamlocal: {socket_path}");
+
+        let AdmittedForward {
+            session_id,
+            session,
+            username,
+        } = match self.admit_forward("direct-streamlocal").await {
+            Ok(admitted) => admitted,
+            Err(failure) => {
+                reply.reject(failure).await;
+                return Ok(());
+            }
+        };
+
+        let path = match StreamlocalPath::try_from(socket_path) {
+            Ok(path) => path,
+            Err(reason) => {
+                tracing::warn!(
+                    %session_id,
+                    path = socket_path,
+                    reason,
+                    "direct-streamlocal rejected: socket path refused"
+                );
+                reply
+                    .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                    .await;
+                return Ok(());
+            }
+        };
+
+        let child = match dial_in_box(&session, &username, InBoxTarget::Unix(&path)).await {
+            Ok(child) => child,
+            Err(failure) => {
+                reply.reject(failure).await;
+                return Ok(());
+            }
+        };
+
+        reply.accept().await;
+
+        // One info line per served channel open, as direct-tcpip logs its own
+        // (NET-110): the daemon log names every socket a session relayed to.
+        tracing::info!(
+            session_id = %session_id,
+            path = %path,
+            "direct-streamlocal channel open: relaying bytes to the box socket"
+        );
+
+        // The relay is the session's to abort at teardown, as a forward is.
+        let relay = crate::traced::spawn(relay_streams(channel.into_stream(), child));
+        session.track_forward(relay.abort_handle()).await;
+
+        Ok(())
+    }
+
     /// The `direct-tcpip` handler's body, run under the forward's span (see
     /// [`russh::server::Handler::channel_open_direct_tcpip`] above).
     async fn relay_direct_tcpip(
@@ -560,63 +647,14 @@ impl ConnectionHandler {
              from {originator_address}:{originator_port}"
         );
 
-        let (is_local, username, serv) = {
-            let state = self.0.lock().await;
-            (
-                state.auth == Auth::Local,
-                state.ssh_username.clone(),
-                state.serv.clone(),
-            )
-        };
-
-        if !is_local {
-            reply
-                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
-                .await;
-            return Ok(());
-        }
-
-        // Validate the session identified by the SSH username (R4.9). The client
-        // passes the session UUID as `-l <uuid>` so the server can confirm the
-        // session exists before accepting the forward. Fail closed: a missing
-        // or non-UUID username is rejected so direct-tcpip cannot be used
-        // without a valid session context.
-        let Some(uname) = username.as_deref() else {
-            tracing::warn!("direct-tcpip rejected: no SSH username");
-            reply
-                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
-                .await;
-            return Ok(());
-        };
-        let Ok(session_id) = SessionId::parse_str(uname) else {
-            tracing::warn!(value = %uname, "direct-tcpip rejected: username not a session UUID");
-            reply
-                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
-                .await;
-            return Ok(());
-        };
-        let mngr = serv.sessions_manager().await;
-        let session = match mngr.get_session(BoxKeyPredicate::Id(session_id)).await {
-            Ok(Some(session)) => session,
-            Ok(None) => {
-                tracing::warn!(
-                    %session_id,
-                    "direct-tcpip rejected: session not found"
-                );
-                reply
-                    .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
-                    .await;
-                return Ok(());
-            }
-            Err(e) => {
-                tracing::warn!(
-                    %session_id,
-                    error = %e,
-                    "direct-tcpip rejected: session lookup failed"
-                );
-                reply
-                    .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
-                    .await;
+        let AdmittedForward {
+            session_id,
+            session,
+            username: uname,
+        } = match self.admit_forward("direct-tcpip").await {
+            Ok(admitted) => admitted,
+            Err(failure) => {
+                reply.reject(failure).await;
                 return Ok(());
             }
         };
@@ -688,9 +726,16 @@ impl ConnectionHandler {
                     Err(russh::ChannelOpenFailure::ConnectFailed)
                 }
             },
-            DialSite::InBox => dial_in_box(&session, uname, &host, port)
-                .await
-                .map(Upstream::InBox),
+            DialSite::InBox => dial_in_box(
+                &session,
+                &uname,
+                InBoxTarget::Tcp {
+                    host: &host,
+                    port,
+                },
+            )
+            .await
+            .map(Upstream::InBox),
         };
         let upstream = match upstream {
             Ok(upstream) => upstream,
@@ -729,6 +774,70 @@ impl ConnectionHandler {
 
         Ok(())
     }
+
+    /// The admission every forward channel passes before it may dial:
+    /// a local connection whose SSH username names a live session.
+    ///
+    /// The client passes the session UUID as the SSH username so the server
+    /// can confirm the session exists before accepting the forward (R4.9).
+    /// Fail closed: a missing or non-UUID username is rejected, so no forward
+    /// channel can be opened without a valid session context. `kind` is the
+    /// channel type, for the log lines.
+    async fn admit_forward(
+        &self,
+        kind: &'static str,
+    ) -> Result<AdmittedForward, russh::ChannelOpenFailure> {
+        let (is_local, username, serv) = {
+            let state = self.0.lock().await;
+            (
+                state.auth == Auth::Local,
+                state.ssh_username.clone(),
+                state.serv.clone(),
+            )
+        };
+
+        if !is_local {
+            return Err(russh::ChannelOpenFailure::AdministrativelyProhibited);
+        }
+
+        let Some(username) = username else {
+            tracing::warn!("{kind} rejected: no SSH username");
+            return Err(russh::ChannelOpenFailure::AdministrativelyProhibited);
+        };
+        let Ok(session_id) = SessionId::parse_str(&username) else {
+            tracing::warn!(value = %username, "{kind} rejected: username not a session UUID");
+            return Err(russh::ChannelOpenFailure::AdministrativelyProhibited);
+        };
+        let mngr = serv.sessions_manager().await;
+        match mngr.get_session(BoxKeyPredicate::Id(session_id)).await {
+            Ok(Some(session)) => Ok(AdmittedForward {
+                session_id,
+                session,
+                username,
+            }),
+            Ok(None) => {
+                tracing::warn!(%session_id, "{kind} rejected: session not found");
+                Err(russh::ChannelOpenFailure::AdministrativelyProhibited)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    %session_id,
+                    error = %e,
+                    "{kind} rejected: session lookup failed"
+                );
+                Err(russh::ChannelOpenFailure::AdministrativelyProhibited)
+            }
+        }
+    }
+}
+
+/// A forward channel that passed [`ConnectionHandler::admit_forward`]: the
+/// session it was opened for, and the SSH username that named it.
+struct AdmittedForward {
+    session_id: SessionId,
+    session: crate::box_actor::BoxHandle,
+    /// The session's UUID as the client sent it, which `ensure_host` takes.
+    username: String,
 }
 
 /// The client's trace context a direct-tcpip open carries, when its
@@ -760,6 +869,78 @@ fn forward_span(host: &str, port: u32, originator_address: &str) -> tracing::Spa
         crate::exec::adopt_trace(&span, forward_parent(originator_address));
     }
     span
+}
+
+/// The span one `direct-streamlocal` channel is served under: `forward`, as
+/// a TCP forward's is, naming the socket rather than a host and port.
+///
+/// Always unsampled and marked opt-out: the channel open has no originator
+/// field, so the client can carry neither its trace context nor its
+/// telemetry opt-out, and the one choice that honours an opt-out the daemon
+/// cannot see is to export nothing. The file log still records the relay.
+fn streamlocal_span(socket_path: &str) -> tracing::Span {
+    let span = tracing::info_span!(
+        "forward",
+        path = %socket_path,
+        telemetry = tracing::field::Empty,
+        trace_id = tracing::field::Empty,
+        span_id = tracing::field::Empty,
+        parent_span_id = tracing::field::Empty,
+    );
+    crate::exec::adopt_opt_out(&span);
+    span
+}
+
+/// A unix socket path a `direct-streamlocal` channel may dial (NET-144).
+///
+/// Only an absolute path under `/run/` — where a box keeps its runtime
+/// sockets (`XDG_RUNTIME_DIR` is `/run` in every box) — whose components
+/// are each non-empty, neither `.` nor `..`, and spelled from
+/// `[A-Za-z0-9._-]`, at most [`StreamlocalPath::MAX_LEN`] bytes long.
+///
+/// The character set is not cosmetic: the path is handed to socat inside an
+/// address string, where `,` starts an option and `:` separates fields, so
+/// a path holding either would dial something else. The dial running inside
+/// the box is what bounds where it can reach; this keeps the address the
+/// daemon builds meaning exactly the socket the client named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StreamlocalPath(String);
+
+impl StreamlocalPath {
+    /// `sun_path` holds 108 bytes, one of them the terminating NUL.
+    const MAX_LEN: usize = 107;
+}
+
+impl TryFrom<&str> for StreamlocalPath {
+    /// Why the path was refused, for the log line.
+    type Error = &'static str;
+
+    fn try_from(path: &str) -> Result<Self, Self::Error> {
+        if path.len() > Self::MAX_LEN {
+            return Err("longer than a unix socket path can be");
+        }
+        let Some(rest) = path.strip_prefix("/run/") else {
+            return Err("not under /run/");
+        };
+        for component in rest.split('/') {
+            if component.is_empty() || component == "." || component == ".." {
+                return Err("has an empty, `.` or `..` component");
+            }
+            if !component
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+            {
+                return Err("has a character outside [A-Za-z0-9._-]");
+            }
+        }
+        Ok(Self(path.to_string()))
+    }
+}
+
+impl std::fmt::Display for StreamlocalPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// The span an interactive attach is served under: `attach`, a child of the
@@ -813,14 +994,50 @@ fn dial_site(network: boxes::NetworkMode) -> DialSite {
 /// only widens the window a half-closing client has to hear the box.
 const IN_BOX_DIAL_LINGER_SECS: u32 = 5;
 
-/// Dials `host:port` from inside the box's namespaces, returning the relay's
+/// What an in-box dial connects to.
+#[derive(Debug, Clone, Copy)]
+enum InBoxTarget<'a> {
+    /// A TCP port, from the box's own network namespace (`direct-tcpip`).
+    Tcp { host: &'a str, port: u16 },
+    /// A unix socket in the box's filesystem (`direct-streamlocal`).
+    Unix(&'a StreamlocalPath),
+}
+
+impl InBoxTarget<'_> {
+    /// The channel type the dial serves, for the log lines.
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Tcp { .. } => "direct-tcpip",
+            Self::Unix(_) => "direct-streamlocal",
+        }
+    }
+
+    /// The target as socat's second address.
+    fn socat_address(&self) -> String {
+        match self {
+            Self::Tcp { host, port } => format!("TCP:{host}:{port},connect-timeout=10"),
+            Self::Unix(path) => format!("UNIX-CONNECT:{path}"),
+        }
+    }
+}
+
+impl std::fmt::Display for InBoxTarget<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tcp { host, port } => write!(f, "{host}:{port}"),
+            Self::Unix(path) => path.fmt(f),
+        }
+    }
+}
+
+/// Dials `target` from inside the box's namespaces, returning the relay's
 /// box-side half on success and the SSH open failure to reject the channel
 /// with otherwise.
 ///
 /// The box's namespaces are reached the one sanctioned way — a command run
 /// in-session, which is the nsenter injection joining every namespace the
 /// box unshared, netns included — and the dial itself is a `socat` relaying
-/// the box port onto its stdio. `socat` is a baseline package, so every box
+/// the target onto its stdio. `socat` is a baseline package, so every box
 /// has it.
 ///
 /// `session` is the session the channel is being opened for; `conn_username`
@@ -829,17 +1046,16 @@ const IN_BOX_DIAL_LINGER_SECS: u32 = 5;
 async fn dial_in_box(
     session: &crate::box_actor::BoxHandle,
     conn_username: &str,
-    host: &str,
-    port: u16,
+    target: InBoxTarget<'_>,
 ) -> Result<ChildStdio, russh::ChannelOpenFailure> {
+    let kind = target.kind();
     let host_handle = match session.ensure_host(conn_username.to_string()).await {
         Ok(host_handle) => host_handle,
         Err(e) => {
             tracing::warn!(
-                host,
-                port,
+                %target,
                 error = %e,
-                "direct-tcpip: could not bring the box up to dial from"
+                "{kind}: could not bring the box up to dial from"
             );
             return Err(russh::ChannelOpenFailure::AdministrativelyProhibited);
         }
@@ -850,7 +1066,7 @@ async fn dial_in_box(
             [
                 format!("-t{IN_BOX_DIAL_LINGER_SECS}"),
                 "-".to_string(),
-                format!("TCP:{host}:{port},connect-timeout=10"),
+                target.socat_address(),
             ],
             relay_extra_env(),
         )
@@ -859,10 +1075,9 @@ async fn dial_in_box(
         Ok(command) => command,
         Err(e) => {
             tracing::warn!(
-                host,
-                port,
+                %target,
                 error = %e,
-                "direct-tcpip: could not build the in-box dial"
+                "{kind}: could not build the in-box dial"
             );
             return Err(russh::ChannelOpenFailure::ConnectFailed);
         }
@@ -879,10 +1094,9 @@ async fn dial_in_box(
         Ok(child) => child,
         Err(e) => {
             tracing::warn!(
-                host,
-                port,
+                %target,
                 error = %e,
-                "direct-tcpip: could not start the in-box dial"
+                "{kind}: could not start the in-box dial"
             );
             return Err(russh::ChannelOpenFailure::ConnectFailed);
         }
@@ -1601,6 +1815,287 @@ kill "$peer" 2>/dev/null
             .expect("the channel must close with the session")
             .expect("read on the channel after teardown");
         assert_eq!(n, 0, "the forward's channel must see EOF, not more bytes");
+    }
+
+    /// NET-144's rules, one path per rule.
+    #[test]
+    fn streamlocal_paths_are_absolute_under_run_and_plainly_spelled() {
+        for ok in [
+            "/run/minimal-display/vnc.sock",
+            "/run/a",
+            "/run/user.1000/x_y-z.sock",
+        ] {
+            assert!(
+                StreamlocalPath::try_from(ok).is_ok(),
+                "{ok} should be accepted"
+            );
+        }
+        let too_long = format!("/run/{}", "a".repeat(StreamlocalPath::MAX_LEN));
+        for refused in [
+            "",
+            "run/x",
+            "/run",
+            "/run/",
+            "/runx/a",
+            "/etc/passwd",
+            "/run/../etc/passwd",
+            "/run/./x",
+            "/run//x",
+            "/run/x/",
+            "/run/a,b",
+            "/run/a:b",
+            "/run/a b",
+            "/run/ä",
+            too_long.as_str(),
+        ] {
+            assert!(
+                StreamlocalPath::try_from(refused).is_err(),
+                "{refused:?} should be refused"
+            );
+        }
+    }
+
+    /// An `Active` session in `network` mode, created through the RPCs a
+    /// client sends (a forward's in-box dial needs the session's host).
+    async fn active_session(
+        server: &crate::test_harness::TestServer,
+        name: &str,
+        network: boxes::NetworkMode,
+    ) -> SessionId {
+        use minimald_rpc::{
+            ConfigureLoadout, ConfigureLoadoutRequest, CreateSession, Errorable, FinalizeSession,
+            FinalizeSessionRequest,
+        };
+
+        use crate::test_harness::{create_session_req, unwrap_ready};
+
+        let mut req = create_session_req(name, "/tmp");
+        req.config.network = network;
+        let mut client = server.connect().await;
+        let session_id = match client.call::<CreateSession>(&req).await {
+            Errorable::Ok(r) => r.id,
+            Errorable::Err { error } => panic!("CreateSession failed: {error}"),
+        };
+        unwrap_ready(
+            client
+                .call::<ConfigureLoadout>(&ConfigureLoadoutRequest {
+                    session_id,
+                    contribution: Default::default(),
+                })
+                .await
+                .unwrap(),
+        );
+        match client
+            .call::<FinalizeSession>(&FinalizeSessionRequest {
+                session_id,
+                report_shared_port_collisions: false,
+            })
+            .await
+        {
+            Errorable::Ok(_) => {}
+            Errorable::Err { error } => panic!("FinalizeSession failed: {error}"),
+        }
+        session_id
+    }
+
+    /// A `socat` stand-in for the unix-socket dial, written where the test
+    /// puts the dial's `PATH`.
+    ///
+    /// The harness's "in-session" command runs host-side, where the box's
+    /// `/run` does not exist and nothing can bind there, and bash cannot
+    /// open a unix socket besides. So the stand-in records its argv — the
+    /// `UNIX-CONNECT:` address is what the test pins — and relays stdio to
+    /// the test's echo port instead, baked in when the script is written.
+    /// Connecting the real socket is socat's job, proved end to end.
+    fn write_unix_socat_standin(dir: &std::path::Path, echo_port: u16) -> std::path::PathBuf {
+        let argv_path = dir.join("argv");
+        assert!(
+            !argv_path.to_string_lossy().contains('\''),
+            "the stand-in dir must be shell-quoting-safe: {}",
+            argv_path.display()
+        );
+        let standin_script = format!(
+            r#"#!/bin/bash
+printf '%s\n' "$@" >'{argv}'
+exec 3<>"/dev/tcp/127.0.0.1/{echo_port}" || exit 1
+cat <&3 &
+peer=$!
+cat >&3
+kill "$peer" 2>/dev/null
+"#,
+            argv = argv_path.to_string_lossy(),
+        );
+        let standin = dir.join("socat");
+        std::fs::write(&standin, standin_script).expect("write the socat stand-in");
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&standin, std::fs::Permissions::from_mode(0o755))
+            .expect("make the socat stand-in executable");
+        argv_path
+    }
+
+    /// NET-143: a `direct-streamlocal` channel dials its socket from inside
+    /// the box in `network` mode, relays through it, logs its open, and ends
+    /// with the session (NET-105's daemon half, as a TCP forward does).
+    async fn streamlocal_dials_inside_the_box(network: boxes::NetworkMode) {
+        use crate::test_harness::{TestServer, captured_log};
+
+        let log = captured_log();
+        let standin_dir = tempfile::tempdir().expect("tempdir for the socat stand-in");
+        let argv_path = write_unix_socat_standin(standin_dir.path(), echo_port().await);
+        let _relay_path = RelayPathGuard::set_to(standin_dir.path());
+
+        let server = TestServer::new().await;
+        let session_id = active_session(&server, "direct-streamlocal", network).await;
+        let handle = forward_client(&server, session_id).await;
+
+        let socket = "/run/minimal-display/vnc.sock";
+        let mut channel = handle
+            .channel_open_direct_streamlocal(socket)
+            .await
+            .expect("the in-box dial must open the channel")
+            .into_stream();
+        channel.write_all(b"ping").await.unwrap();
+        let mut echoed = [0u8; 4];
+        channel.read_exact(&mut echoed).await.unwrap();
+        assert_eq!(&echoed, b"ping", "the socket must echo the relayed bytes");
+
+        let argv = std::fs::read_to_string(&argv_path).expect("the stand-in records its argv");
+        assert!(
+            argv.lines()
+                .any(|a| a == format!("-t{IN_BOX_DIAL_LINGER_SECS}")),
+            "the in-box dial must pass socat an explicit linger, got: {argv}"
+        );
+        assert!(
+            argv.lines().any(|a| a == "-"),
+            "the in-box dial must relay stdio, got: {argv}"
+        );
+        assert!(
+            argv.lines().any(|a| a == format!("UNIX-CONNECT:{socket}")),
+            "the in-box dial must name the socket in a UNIX-CONNECT: address, got: {argv}"
+        );
+
+        let logged = log.contents();
+        let line = logged
+            .lines()
+            .find(|l| l.contains("direct-streamlocal channel open"))
+            .unwrap_or_else(|| {
+                panic!("expected a direct-streamlocal channel-open info line, got: {logged}")
+            });
+        assert!(
+            line.contains(&format!("session_id={session_id}")),
+            "the open line must name the session, got: {line}"
+        );
+        assert!(
+            line.contains(&format!("path={socket}")),
+            "the open line must name the socket, got: {line}"
+        );
+
+        let session = server
+            .state
+            .sessions_manager()
+            .await
+            .get_session(BoxKeyPredicate::Id(session_id))
+            .await
+            .unwrap()
+            .expect("the session exists until destroyed");
+        session.destroy().await.unwrap();
+        let mut end = [0u8; 1];
+        let n = tokio::time::timeout(Duration::from_secs(5), channel.read(&mut end))
+            .await
+            .expect("the channel must close with the session")
+            .expect("read on the channel after teardown");
+        assert_eq!(n, 0, "the forward's channel must see EOF, not more bytes");
+    }
+
+    #[tokio::test]
+    async fn direct_streamlocal_dials_inside_an_isolated_box() {
+        streamlocal_dials_inside_the_box(boxes::NetworkMode::NoNet).await;
+    }
+
+    /// A box sharing the daemon's network namespace still dials in the box:
+    /// the socket is in the box's filesystem, and a daemon-side connect
+    /// would follow whatever symlink the box left there.
+    #[tokio::test]
+    async fn direct_streamlocal_dials_inside_a_shared_netns_box() {
+        streamlocal_dials_inside_the_box(boxes::NetworkMode::HostNet).await;
+    }
+
+    /// NET-144: a path outside the rules is refused before anything dials,
+    /// and so is an open on a connection not scoped to a session.
+    #[tokio::test]
+    async fn direct_streamlocal_refuses_paths_outside_run() {
+        use crate::test_harness::{TestServer, create_session_req};
+
+        let server = TestServer::new().await;
+        let req = create_session_req("direct-streamlocal-refusals", "/tmp");
+        let session_id = server
+            .state
+            .sessions_manager()
+            .await
+            .create_session(req.config, None)
+            .await
+            .unwrap();
+        let handle = forward_client(&server, session_id).await;
+
+        let refused = |result: Result<russh::Channel<russh::client::Msg>, russh::Error>| {
+            matches!(
+                result,
+                Err(russh::Error::ChannelOpenFailure(
+                    russh::ChannelOpenFailure::AdministrativelyProhibited
+                ))
+            )
+        };
+        for path in [
+            "relative.sock",
+            "/etc/passwd",
+            "/run",
+            "/run/../etc/passwd",
+            "/run/a,fork",
+            "/run/a:b",
+        ] {
+            let result = handle.channel_open_direct_streamlocal(path).await;
+            assert!(refused(result), "{path:?} must be refused");
+        }
+
+        // A connection whose username is no session UUID never reaches the
+        // path check.
+        let host_key = server.state.host_key().await.unwrap();
+        let russh_config = Arc::new(russh::server::Config {
+            keys: vec![host_key],
+            auth_rejection_time_initial: Some(Duration::ZERO),
+            nodelay: true,
+            ..Default::default()
+        });
+        let (server_side, client_side) = tokio::net::UnixStream::pair().unwrap();
+        let state = server.state.clone();
+        let server_setup = async move {
+            let (_conn, session_fut) =
+                Connection::from_stream(server_side, russh_config, state, true)
+                    .await
+                    .expect("handshake over the in-memory pair");
+            crate::traced::spawn(session_fut);
+        };
+        let client_setup = russh::client::connect_stream(
+            Arc::new(russh::client::Config::default()),
+            client_side,
+            ForwardHandler,
+        );
+        let (_, unscoped) = tokio::join!(server_setup, client_setup);
+        let mut unscoped = unscoped.unwrap();
+        assert!(
+            unscoped
+                .authenticate_none("minimal-cli")
+                .await
+                .unwrap()
+                .success()
+        );
+        let result = unscoped
+            .channel_open_direct_streamlocal("/run/minimal-display/vnc.sock")
+            .await;
+        assert!(
+            refused(result),
+            "an unscoped connection must not open a streamlocal channel"
+        );
     }
 
     /// A passthrough transport whose write side can be wedged at will:

@@ -800,6 +800,16 @@ included, with every refusal logged (NET-001 to NET-004).
   verify:   cargo nextest run -p minimald direct_tcpip_served_in_release
   <!-- S18/AC2; prose 71; ubiquitous -->
 
+- **NET-143** WHEN a client opens an SSH direct-streamlocal channel on a session-scoped connection THE SYSTEM SHALL connect it to the named socket from inside the session's box, whatever the box's network mode.
+  tier:     T0
+  verify:   cargo nextest run -p minimald direct_streamlocal_dials_inside
+  <!-- no story yet: the transport `min session display` reaches the box's VNC socket over; event-driven; the dial runs as the box even in `host_ip` mode, so a symlink the box controls cannot point the daemon at its own sockets; the open has no originator field to carry a trace context or an opt-out, so its `forward` span is never exported (TEL-028 covers `min net forward` alone) -->
+
+- **NET-144** IF a direct-streamlocal channel names a path that is not absolute under `/run/`, has an empty, `.` or `..` component, or has a character outside `[A-Za-z0-9._/-]`, THEN THE SYSTEM SHALL refuse the channel.
+  tier:     T0
+  verify:   cargo nextest run -p minimald direct_streamlocal_refuses_paths_outside_run
+  <!-- unwanted-behaviour; the character set keeps the socat address the daemon builds naming exactly the socket the client sent -->
+
 - **NET-111** THE SYSTEM SHALL document no retired command in the CLI reference.
   tier:     T0
   verify:   cargo nextest run -p minimal cli_reference_has_no_retired_commands

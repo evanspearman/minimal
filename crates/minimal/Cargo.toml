@@ -1,6 +1,6 @@
 [package]
 name = "minimal"
-description = "The min CLI: sessions, tasks, loadouts, packages, networking, diagnostics, project setup, and the min dash session-manager TUI, over SSH to minimald, auto-spawning minvmd where the daemon lives in a microVM."
+description = "The min CLI: sessions, tasks, loadouts, packages, networking, diagnostics, project setup, the min dash session-manager TUI, and the min session display window, over SSH to minimald, auto-spawning minvmd where the daemon lives in a microVM."
 rust-version.workspace = true
 version.workspace = true
 edition.workspace = true
@@ -22,6 +22,13 @@ path = "src/main.rs"
 # is deferred for now; the daemon-side `direct-tcpip` handler needs no feature
 # and is served in every build.
 remote-access = []
+# On by default: `min session display`, the native window onto a box's
+# display. Builds where it cannot work leave it out on their own: a static
+# musl binary cannot dlopen X11 or Wayland, so the window's dependencies
+# below are not built for musl, and the verb there says the build has no
+# display support, as it does with the feature off.
+default = ["display"]
+display = ["dep:winit", "dep:softbuffer", "dep:flate2"]
 
 [dependencies]
 anyhow.workspace = true
@@ -115,6 +122,14 @@ crossterm.workspace = true
 futures.workspace = true
 ratatui.workspace = true
 unicode-width.workspace = true
+
+# ── `min session display` (`minimal::display`) ─────────────────────────────
+# The window and the RFB client's ZRLE inflate. Not for musl: see the
+# `display` feature.
+[target.'cfg(not(target_env = "musl"))'.dependencies]
+flate2 = { workspace = true, optional = true }
+softbuffer = { workspace = true, optional = true }
+winit = { workspace = true, optional = true }
 
 [dev-dependencies]
 # `insta` for the `dash_snapshots` render snapshots; `term` for the pty that

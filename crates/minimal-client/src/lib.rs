@@ -460,6 +460,25 @@ impl Client {
             .with_context(|| format!("open direct-tcpip channel to {host}:{port}"))
     }
 
+    /// Open a `direct-streamlocal` channel to the unix socket at
+    /// `socket_path` inside the session this connection is scoped to.
+    ///
+    /// On a [`Client::connect_scoped`] connection the daemon dials the socket
+    /// from inside the session's box, so the path is the box's. The daemon
+    /// only accepts absolute paths under `/run/` spelled from
+    /// `[A-Za-z0-9._/-]`. The channel open carries no originator field, so
+    /// unlike [`Client::open_direct_tcpip`] the daemon's side of the relay is
+    /// not part of this command's trace.
+    pub async fn open_direct_streamlocal(
+        &mut self,
+        socket_path: &str,
+    ) -> Result<russh::Channel<russh::client::Msg>, anyhow::Error> {
+        self.handle
+            .channel_open_direct_streamlocal(socket_path)
+            .await
+            .with_context(|| format!("open direct-streamlocal channel to {socket_path}"))
+    }
+
     /// Issue a oneshot RPC: open a channel, request the subsystem, write the
     /// serialized request, half-close, and decode the response.
     ///
