@@ -23,6 +23,7 @@ use winit::window::{Window, WindowId};
 
 use super::keysym::{KeyTracker, keysym};
 use super::rfb::{Framebuffer, Outbound};
+use super::stats::{MOVE_GAP, Stats};
 
 /// The desktop as the window last drew it, shared with the task that
 /// decodes the server's updates.
@@ -183,6 +184,8 @@ pub(crate) struct App {
     /// Smooth-scroll distance not yet sent as a notch.
     scroll: (f64, f64),
     end: Option<End>,
+    stats: Arc<Stats>,
+    last_move: Option<std::time::Instant>,
 }
 
 impl App {
@@ -191,6 +194,7 @@ impl App {
         size: (u16, u16),
         shared: Arc<SharedFrame>,
         outbound: UnboundedSender<Outbound>,
+        stats: Arc<Stats>,
     ) -> Self {
         Self {
             title,
@@ -205,6 +209,8 @@ impl App {
             pointer: None,
             scroll: (0.0, 0.0),
             end: None,
+            stats,
+            last_move: None,
         }
     }
 
@@ -367,7 +373,13 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Err(e) = self.redraw() {
+                let started = std::time::Instant::now();
+                let drawn = self.redraw();
+                Stats::max(&self.stats.max_redraw_us, started.elapsed());
+                self.stats
+                    .redraws
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if let Err(e) = drawn {
                     self.finish(event_loop, End::WindowFailed(e));
                 }
             }
@@ -407,6 +419,17 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             },
             WindowEvent::CursorMoved { position, .. } => {
+                self.stats
+                    .moves
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let now = std::time::Instant::now();
+                if let Some(gap) = self.last_move.map(|t| now - t).filter(|g| *g > MOVE_GAP) {
+                    tracing::debug!(
+                        gap_ms = gap.as_millis(),
+                        "display: no mouse moves delivered for a while"
+                    );
+                }
+                self.last_move = Some(now);
                 if let Some(at) = self.viewport().and_then(|v| v.to_remote(position)) {
                     self.pointer = Some(at);
                     self.send_pointer();

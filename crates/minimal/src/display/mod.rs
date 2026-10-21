@@ -21,6 +21,7 @@
 mod host;
 mod keysym;
 pub(crate) mod rfb;
+mod stats;
 mod window;
 mod zrle;
 
@@ -38,6 +39,7 @@ use winit::event_loop::{EventLoop, EventLoopProxy};
 
 use self::host::{HostMsg, NotReady, Tail};
 use self::rfb::{Outbound, Reader, RfbError, ServerInit};
+use self::stats::Stats;
 use self::window::{App, End, SharedFrame, UserEvent};
 
 /// How long the host has to start its desktop, from the exec request on.
@@ -295,10 +297,14 @@ async fn read_loop(
     shared: Arc<SharedFrame>,
     proxy: EventLoopProxy<UserEvent>,
     outbound: mpsc::UnboundedSender<Outbound>,
+    stats: Arc<Stats>,
 ) {
     let cause = loop {
         match reader.next_update().await {
             Ok(update) => {
+                stats
+                    .frames
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let fb = reader.framebuffer();
                 if shared.publish(fb) || update.resized {
                     #[expect(
@@ -338,13 +344,26 @@ async fn read_loop(
 async fn write_loop(
     mut stream: WriteHalf<RfbStream>,
     mut outbound: mpsc::UnboundedReceiver<Outbound>,
+    stats: Arc<Stats>,
 ) {
     let mut batch = Vec::new();
     while outbound.recv_many(&mut batch, 256).await > 0 {
         coalesce(&mut batch);
+        let pointers = batch
+            .iter()
+            .filter(|m| matches!(m, Outbound::Pointer { .. }))
+            .count();
+        let started = std::time::Instant::now();
         if rfb::send(&mut stream, &batch).await.is_err() {
             return;
         }
+        Stats::max(&stats.max_write_us, started.elapsed());
+        stats
+            .writes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        stats
+            .pointers_sent
+            .fetch_add(pointers as u64, std::sync::atomic::Ordering::Relaxed);
         batch.clear();
     }
 }
@@ -375,7 +394,12 @@ pub fn run_on_main_thread(pending: Pending, runtime: &tokio::runtime::Runtime) -
     let (end, tasks, host_watch) = match build_event_loop() {
         Ok(event_loop) => {
             let proxy = event_loop.create_proxy();
+            let stats = Arc::new(Stats::default());
             let mut tasks = Vec::new();
+            let reporter = stats.clone();
+            tasks.push(
+                runtime.spawn(async move { reporter.report().await }.instrument(root.clone())),
+            );
             tasks.push(
                 runtime.spawn(
                     read_loop(
@@ -383,11 +407,16 @@ pub fn run_on_main_thread(pending: Pending, runtime: &tokio::runtime::Runtime) -
                         shared.clone(),
                         proxy.clone(),
                         outbound_tx.clone(),
+                        stats.clone(),
                     )
                     .instrument(root.clone()),
                 ),
             );
-            tasks.push(runtime.spawn(write_loop(rfb_write, outbound_rx).instrument(root.clone())));
+            tasks.push(
+                runtime.spawn(
+                    write_loop(rfb_write, outbound_rx, stats.clone()).instrument(root.clone()),
+                ),
+            );
             let signal_proxy = proxy.clone();
             tasks.push(
                 runtime.spawn(
@@ -416,7 +445,7 @@ pub fn run_on_main_thread(pending: Pending, runtime: &tokio::runtime::Runtime) -
                 .instrument(root.clone()),
             );
             let title = format!("{label} — min session display");
-            let mut app = App::new(title, (init.width, init.height), shared, outbound_tx);
+            let mut app = App::new(title, (init.width, init.height), shared, outbound_tx, stats);
             let end = match event_loop.run_app(&mut app) {
                 Ok(()) => app.end(),
                 Err(e) => End::WindowFailed(e.to_string()),
