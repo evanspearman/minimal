@@ -92,6 +92,20 @@ fn build_record(
     username: Option<String>,
     status: boxes::BoxState,
 ) -> Result<boxes::Record, std::io::Error> {
+    // BEP-007: a delivery's variable is written into the box's environment
+    // and into the file its shell sources, so a name that is not a POSIX
+    // variable name is refused here and never reaches the store.
+    if let Some(delivery) = config.sealed_deliveries.iter().find(|delivery| {
+        boxes::core::primitives::StrictVarName::try_new(delivery.variable.as_str()).is_err()
+    }) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "the GitHub grant {:?} is not a valid environment variable name",
+                delivery.variable
+            ),
+        ));
+    }
     let record = boxes::Record {
         id: SessionId::nil(),
         name: config.name,
@@ -118,6 +132,9 @@ fn build_record(
         // Daemon-owned as well: only a launch binds the box's host-side row.
         host_row_bound: false,
         bound_ports: std::collections::BTreeSet::new(),
+        // BEP-007: the grants' sealed values ride the record, so every host
+        // launch of the box, after a daemon restart included, places them.
+        sealed_deliveries: config.sealed_deliveries,
         attrs: config.attrs,
     };
     record

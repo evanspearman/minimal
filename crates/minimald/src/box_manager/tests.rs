@@ -133,6 +133,8 @@ fn sample_config() -> minimald_rpc::BoxConfig {
         box_addresses: None,
         hooks_enabled: true,
         attrs: Default::default(),
+        sealed_deliveries: Vec::new(),
+        root_certificate: None,
     }
 }
 
@@ -1519,5 +1521,99 @@ async fn start_materialize_rejects_an_unknown_output_by_name() {
     assert!(
         err.to_string().contains("no-such-output"),
         "the error must name the output that was asked for, got {err}"
+    );
+}
+
+/// BEP-007: the sealed values a create request carries ride the box's
+/// stored record, and a host launch takes them from it, so every launch,
+/// after a daemon restart included, places them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sealed_deliveries_ride_the_record_to_the_host_params() {
+    let (_state, _cache, mngr) = manager().await;
+    let deliveries = vec![
+        boxes::SealedDelivery {
+            variable: "GH_TOKEN".to_string(),
+            sealed: "v1.sealed-one".to_string(),
+        },
+        boxes::SealedDelivery {
+            variable: "GITHUB_TOKEN".to_string(),
+            sealed: "v1.sealed-two".to_string(),
+        },
+    ];
+    let config = minimald_rpc::BoxConfig {
+        sealed_deliveries: deliveries.clone(),
+        ..sample_config()
+    };
+    let id = mngr.create_session(config, None).await.unwrap();
+    let record = mngr
+        .get_record(BoxKeyPredicate::Id(id))
+        .await
+        .unwrap()
+        .expect("the created box has a record");
+    assert_eq!(record.sealed_deliveries, deliveries);
+    assert_eq!(crate::box_runtime::launch_deliveries(&record), deliveries);
+
+    // The `GetSessionRecord` reply for the grant box carries no sealed
+    // value, on the wire or in the record, while the store keeps them.
+    let reply = crate::rpc::session_record_response(Some(record.clone()));
+    let replied = reply.record.as_ref().expect("the reply carries the record");
+    assert!(replied.sealed_deliveries.is_empty(), "{replied:?}");
+    assert_eq!(replied.id, record.id);
+    let wire = serde_json_lenient::to_string(&reply).unwrap();
+    assert!(
+        !wire.contains("v1.sealed-one") && !wire.contains("sealed_deliveries"),
+        "{wire}"
+    );
+    let stored = mngr
+        .get_record(BoxKeyPredicate::Id(id))
+        .await
+        .unwrap()
+        .expect("the store still has the record");
+    assert_eq!(stored.sealed_deliveries, deliveries);
+
+    // A box with no grant carries none.
+    let id = mngr
+        .create_session(
+            minimald_rpc::BoxConfig {
+                name: Some("no-grant".to_string()),
+                ..sample_config()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let record = mngr
+        .get_record(BoxKeyPredicate::Id(id))
+        .await
+        .unwrap()
+        .expect("the created box has a record");
+    assert!(crate::box_runtime::launch_deliveries(&record).is_empty());
+
+    // A grant whose name is not a variable name is refused, and no record
+    // is stored for it.
+    let err = mngr
+        .create_session(
+            minimald_rpc::BoxConfig {
+                name: Some("bad-grant".to_string()),
+                sealed_deliveries: vec![boxes::SealedDelivery {
+                    variable: "X=1; touch /tmp/owned #".to_string(),
+                    sealed: "v1.sealed-three".to_string(),
+                }],
+                ..sample_config()
+            },
+            None,
+        )
+        .await
+        .expect_err("a grant name that is not a variable name is refused");
+    assert!(
+        err.to_string()
+            .contains("not a valid environment variable name"),
+        "{err}"
+    );
+    assert!(
+        mngr.get_record(BoxKeyPredicate::Name("bad-grant".to_string()))
+            .await
+            .unwrap()
+            .is_none()
     );
 }
