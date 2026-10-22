@@ -418,6 +418,7 @@ RECOVER_HOLDER_PID="" # the port holder the recovery proof starts; killed
 RECOVER_SWITCH_SOCK="" # the minvmd switch socket beat C moves; restored
 RECOVER_SWITCH_HOLD="" # where beat C parks it mid-proof
 RETIRED_SEED_DIR="" # seeded by the retired-surfaces proof below; removed on teardown
+GRANT_SEED_DIR="" # seeded by the GitHub grant proof below; removed on teardown
 RETIRED_FWD_PID="" # the `min net forward` it starts; killed on teardown
 EGRESS_SEED_DIR="" # seeded by the own-IP egress proof below; removed on teardown
 TWO_VM_NAME="" # the named VM the two-named-VMs proof creates; stopped on teardown
@@ -737,8 +738,11 @@ elif command -v min >/dev/null 2>&1 && min --version >/dev/null 2>&1 \
   :
 else
   min_cli_dir=""
+  # A dir counts only with BOTH halves of the pair: a shared target dir can
+  # hold a 'min' from an earlier build and no daemon, and taking it skips the
+  # build below and dies at the daemon gate.
   for d in "$ROOT/target/debug" "${CARGO_TARGET_DIR:-/nonexistent}/debug"; do
-    if [ -x "$d/min" ]; then
+    if [ -x "$d/min" ] && [ -x "$d/$min_daemon" ]; then
       min_cli_dir="$d"
       break
     fi
@@ -757,7 +761,7 @@ else
   # instead of the run dying at the CLI gate with a build instruction the
   # caller cannot read mid-verify.
   if [ -z "$min_cli_dir" ] && command -v cargo >/dev/null 2>&1; then
-    echo "no usable 'min' on PATH and no build under target/; building the pair this run drives (cargo build --locked -p minimal --bin min -p $min_daemon --bin $min_daemon)"
+    echo "no usable 'min' and '$min_daemon' pair on PATH or under target/; building the pair this run drives (cargo build --locked -p minimal --bin min -p $min_daemon --bin $min_daemon)"
     # A VM-backed run also needs the answerer program the advisory's command
     # copies into place (beside min). It builds in its own invocation, as
     # `just zoned-build` does: beside `-p minvmd`, cargo would unify
@@ -767,7 +771,7 @@ else
         && { [ "$min_daemon" != minvmd ] || cargo build --locked -p minzoned; }) \
         >"$WORK/cli-build.log" 2>&1; then
       for d in "$ROOT/target/debug" "${CARGO_TARGET_DIR:-/nonexistent}/debug"; do
-        if [ -x "$d/min" ]; then
+        if [ -x "$d/min" ] && [ -x "$d/$min_daemon" ]; then
           min_cli_dir="$d"
           break
         fi
@@ -989,6 +993,7 @@ teardown() {
   [ -n "$RECOVER_SEED_DIR" ] && rm -rf "$RECOVER_SEED_DIR"
   [ -n "$SECOND_SEED_DIR" ] && rm -rf "$SECOND_SEED_DIR"
   [ -n "$RETIRED_SEED_DIR" ] && rm -rf "$RETIRED_SEED_DIR"
+  [ -n "$GRANT_SEED_DIR" ] && rm -rf "$GRANT_SEED_DIR"
   [ -n "$EGRESS_SEED_DIR" ] && rm -rf "$EGRESS_SEED_DIR"
   [ -n "$TWO_VM_SEED_A_DIR" ] && rm -rf "$TWO_VM_SEED_A_DIR"
   [ -n "$TWO_VM_SEED_B_DIR" ] && rm -rf "$TWO_VM_SEED_B_DIR"
@@ -11486,6 +11491,73 @@ proof_published_proxy_routes_from_host() {
 # The proxy_sees_each_vm_box_by_its_switch_address case, which the dispatch
 # runs after this one, stops and respawns both daemons for its own filter
 # and stand-in.
+# ---------------------------------------------------------------------------
+# GitHub grant proof (BEP-003, BEP-005): with a sign-in held and the Box
+# Egress Proxy running, two boxes that declare a GitHub grant start one after
+# the other, headless, and neither asks for a sign-in. Each creation mints a
+# sealed sign-in reference and registers the box with the proxy, so the second
+# box reuses the sign-in the first one found. `bep serve` runs on macOS only,
+# and the case needs a sign-in a person made with `min auth login`, so a lane
+# without both records it as NOT RUN.
+proof_bep_second_box_needs_no_sign_in() {
+  echo "::group::GitHub grant boxes: the second box needs no sign-in"
+  # This proof reads the real home, which no earlier subshell export changes.
+  # shellcheck disable=SC2031
+  bep_control="$HOME/.minimal/bep/control.sock"
+  if [ "$(uname -s)" != "Darwin" ]; then
+    not_run bep_second_box_needs_no_sign_in "the Box Egress Proxy runs on macOS only"
+    echo "::endgroup::"
+    return 0
+  fi
+  bep_status="$(mnl auth status </dev/null 2>/dev/null || true)"
+  if [[ "$bep_status" != "Signed in to GitHub"* ]]; then
+    not_run bep_second_box_needs_no_sign_in "no GitHub sign-in on this machine: run 'min auth login' first"
+    echo "::endgroup::"
+    return 0
+  fi
+  if [ ! -S "$bep_control" ]; then
+    # Nothing starts 'bep serve' on any lane until T18
+    # (https://github.com/gominimal/minimal/issues/2275) runs the proxy beside
+    # gvproxy.
+    not_run bep_second_box_needs_no_sign_in "the Box Egress Proxy is not running: no $bep_control. Nothing starts it on this lane until https://github.com/gominimal/minimal/issues/2275 lands"
+    echo "::endgroup::"
+    return 0
+  fi
+
+  GRANT_SEED_DIR="$(hook_mktemp /tmp/mnlgrant.XXXXXX)"
+  {
+    hook_seed_preamble
+    printf '\n[session.secrets.GH_TOKEN]\nsource = "broker"\n'
+  } > "$GRANT_SEED_DIR/minimal.toml"
+  mkdir "$GRANT_SEED_DIR/.git"
+  bep_sids=""
+  for bep_name in e2e-bep-first e2e-bep-second; do
+    # Headless: stdin from /dev/null and --no-prompt. A sign-in prompt has
+    # no terminal to ask on, so a box that needed one fails here.
+    bep_out="$(cd "$GRANT_SEED_DIR" && mnl session activate . --name "$bep_name" --no-prompt \
+      --allow-dns-hosts github.com --allow-dns-hosts api.github.com \
+      --allow-dns-hosts uploads.github.com --allow-dns-hosts codeload.github.com \
+      </dev/null 2>"$WORK/bep-$bep_name.err")" || {
+      echo "::error::'min session activate' of the GitHub grant box $bep_name failed"
+      echo "--- stdout ---"; printf '%s\n' "$bep_out"
+      echo "--- stderr ---"; cat "$WORK/bep-$bep_name.err" 2>/dev/null || true
+      fail
+    }
+    if grep -q 'min auth login' "$WORK/bep-$bep_name.err"; then
+      echo "::error::the GitHub grant box $bep_name asked for a sign-in while one is held"
+      cat "$WORK/bep-$bep_name.err"
+      fail
+    fi
+    bep_sids="$bep_sids $(printf '%s\n' "$bep_out" | tail -n1 | tr -d '\r')"
+  done
+  for bep_sid in $bep_sids; do
+    mnl session destroy --force "$bep_sid" >/dev/null 2>&1 || true
+  done
+  rm -rf "$GRANT_SEED_DIR"; GRANT_SEED_DIR=""
+  echo "GitHub grant proof OK (two grant boxes started headless, with no sign-in prompt)"
+  echo "::endgroup::"
+}
+
 proof_github_only_allowlist() {
   echo "::group::github-only allowlist: toolchain fetches, nothing else, one refused answer, empty lookups, box-zone reach"
 
@@ -22753,6 +22825,7 @@ case "${1:-}" in
     proof_switch_answers_no_arp_for_the_proxy_address
     proof_two_named_vms_on_one_machine
     proof_github_only_allowlist
+    proof_bep_second_box_needs_no_sign_in
     proof_unpublished_port_refused_on_vm_host
     proof_proxy_sees_each_vm_box_by_its_switch_address
     proof_deny_all_box_reaches_proxy_and_no_other_host_port
@@ -22807,7 +22880,8 @@ case "${1:-}" in
     | published_proxy_routes_from_host \
     | escape_reaches_only_declared_union \
     | host_ip_deny_all \
-    | daemon_fetch_under_deny_all_host_address_box)
+    | daemon_fetch_under_deny_all_host_address_box \
+    | bep_second_box_needs_no_sign_in)
     "proof_$1"
     ;;
   *)
@@ -22842,6 +22916,7 @@ case "${1:-}" in
     echo "         escape_reaches_only_declared_union"
     echo "         host_ip_deny_all"
     echo "         daemon_fetch_under_deny_all_host_address_box"
+    echo "         bep_second_box_needs_no_sign_in"
     exit 2
     ;;
 esac

@@ -198,6 +198,152 @@ fn refuse_unhonourable_grants(
     Ok(())
 }
 
+/// The names of the project's GitHub grants, in name order.
+fn github_grant_names(secrets: &boxes::core::bep::SecretGrants) -> Vec<String> {
+    secrets
+        .iter()
+        .filter(|(_, grant)| grant.is_github())
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// Whether the host keychain holds a GitHub sign-in. Reads the item's
+/// metadata only, which carries no token and asks for nothing.
+fn sign_in_held(keychain: &dyn bep::signin::Keychain) -> Result<bool, anyhow::Error> {
+    keychain
+        .metadata()
+        .map(|held| held.is_some())
+        .map_err(|error| crate::mint::MintError::SignIn(error).into())
+}
+
+/// The proxy's name for the box's address stance. A box with no network
+/// has none, and the activation refuses it a grant (BEP-009). The enum is
+/// non-exhaustive, and a mode added later has no stance until it says one.
+fn proxy_stance(network: boxes::NetworkMode) -> Option<bep::boxes::Stance> {
+    match network {
+        boxes::NetworkMode::OwnIp => Some(bep::boxes::Stance::OwnIp),
+        boxes::NetworkMode::HostNet => Some(bep::boxes::Stance::HostIp),
+        _ => None,
+    }
+}
+
+/// Whether a node-local Box Egress Proxy serves boxes on this host: the
+/// proxy published its identity at `identity`, and its control socket is
+/// at `control`. A missing home directory gives neither path.
+pub(crate) fn proxy_present(
+    identity: Option<&std::path::Path>,
+    control: Option<&std::path::Path>,
+) -> bool {
+    identity.is_some_and(std::path::Path::exists) && control.is_some_and(std::path::Path::exists)
+}
+
+/// Checks a box spec's GitHub grants at creation, and gives their names.
+///
+/// Where no node-local proxy serves boxes, a GitHub grant is refused with
+/// `gatehouse_unenrolled_node` (Gatehouse §6.2). Only on a host that has
+/// one is a grant with no held sign-in refused with
+/// `github_sign_in_required` (BEP-003). Only the sign-in item's metadata
+/// is read, and nothing asks for a sign-in.
+pub(crate) fn check_github_grants(
+    secrets: &boxes::core::bep::SecretGrants,
+    proxy_present: bool,
+    keychain: &dyn bep::signin::Keychain,
+) -> Result<Vec<String>, anyhow::Error> {
+    let grants = github_grant_names(secrets);
+    if grants.is_empty() {
+        return Ok(grants);
+    }
+    boxes::core::bep::require_proxy(secrets, proxy_present)?;
+    let signed_in = sign_in_held(keychain)?;
+    boxes::core::bep::require_sign_in(secrets, signed_in)?;
+    Ok(grants)
+}
+
+/// The facts a GitHub grant box is registered with the proxy under: its
+/// box id and its address stance. A native host and a daemon that predates
+/// box ids give no id, and no proxy serves those boxes. A grant there is
+/// refused with `gatehouse_unenrolled_node`, and never resolves to nothing.
+pub(crate) fn grant_box_facts(
+    grants: &[String],
+    box_id: Option<String>,
+    network: boxes::NetworkMode,
+) -> Result<Option<(String, bep::boxes::Stance)>, boxes::core::bep::ActivationRefused> {
+    if grants.is_empty() {
+        return Ok(None);
+    }
+    match (box_id, proxy_stance(network)) {
+        (Some(box_id), Some(stance)) => Ok(Some((box_id, stance))),
+        _ => Err(boxes::core::bep::unenrolled_node(grants.to_vec())),
+    }
+}
+
+/// Mints each GitHub grant's sign-in reference for the box `box_id`, and
+/// registers the box's declared egress and stance with the Box Egress
+/// Proxy (BEP-005). Does nothing for a box with no GitHub grant, and
+/// refuses a grant box with no id or no stance. It blocks on the control
+/// socket, so the activation runs it on a blocking thread. The
+/// registration it gives forgets the box at the proxy when it is dropped
+/// before the creation finishes.
+fn mint_grants(
+    grants: Vec<String>,
+    box_id: Option<String>,
+    egress: Vec<String>,
+    network: boxes::NetworkMode,
+) -> Result<
+    (
+        Vec<crate::mint::Minted>,
+        Option<crate::mint::ProxyRegistration>,
+    ),
+    anyhow::Error,
+> {
+    use crate::mint::{
+        ClientKey, ControlClient, GrantBox, MintError, ProxyRegistration, mint_and_register,
+    };
+    let Some((box_id, stance)) = grant_box_facts(&grants, box_id, network)? else {
+        return Ok((Vec::new(), None));
+    };
+    let (Some(identity_path), Some(control_path)) =
+        (crate::mint::identity_path(), crate::mint::control_path())
+    else {
+        bail!(
+            "Cannot start the box: it declares a GitHub grant, and no home directory was found, \
+             which holds the Box Egress Proxy's keys."
+        );
+    };
+    let identity =
+        bep::publish::Identity::read(&identity_path).map_err(|error| MintError::Identity {
+            path: identity_path.clone(),
+            error,
+        })?;
+    let mut control = ControlClient::connect(&control_path)?;
+    let key = ClientKey::generate()?;
+    let grant_box = GrantBox {
+        box_id,
+        grants,
+        egress,
+        stance,
+    };
+    // A clock before the epoch gives no issue time, so the mint stops
+    // rather than signing handles issued at zero.
+    let Ok(since) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        bail!(
+            "Cannot start the box: it declares a GitHub grant, and the system clock reads a \
+             time before 1970. Set the system clock, then create the box again."
+        );
+    };
+    let minted = mint_and_register(
+        &bep::signin::HostKeychain,
+        &identity,
+        &identity_path,
+        &mut control,
+        &key,
+        &grant_box,
+        since.as_secs(),
+    )?;
+    let registration = ProxyRegistration::new(control_path, &grant_box.box_id)?;
+    Ok((minted, Some(registration)))
+}
+
 /// One named step of [`activate_box`], in the order the activation runs
 /// them. Each step runs inside its own `activation_step` span, so a log read
 /// under `RUST_LOG=info` shows where an activation spent its time and which
@@ -220,6 +366,9 @@ pub(crate) enum ActivationStep {
     RegisterBox,
     /// The `CreateSession` call and its version gate.
     CreateSession,
+    /// The GitHub grants' sign-in references, and the box's registration
+    /// with the Box Egress Proxy.
+    MintGrants,
     /// The session-start lines printed once the session exists.
     ReportStart,
     /// The project file upload into the session workspace.
@@ -235,7 +384,7 @@ pub(crate) enum ActivationStep {
 impl ActivationStep {
     /// Every step, in the order [`activate_box`] runs them.
     #[cfg(test)]
-    pub(crate) const ORDER: [Self; 13] = [
+    pub(crate) const ORDER: [Self; 14] = [
         Self::CheckArguments,
         Self::CheckProject,
         Self::StartDaemon,
@@ -244,6 +393,7 @@ impl ActivationStep {
         Self::ConnectDaemon,
         Self::RegisterBox,
         Self::CreateSession,
+        Self::MintGrants,
         Self::ReportStart,
         Self::UploadFiles,
         Self::ComposeLoadout,
@@ -262,6 +412,7 @@ impl ActivationStep {
             Self::ConnectDaemon => "connect_daemon",
             Self::RegisterBox => "register_box",
             Self::CreateSession => "create_session",
+            Self::MintGrants => "mint_grants",
             Self::ReportStart => "report_start",
             Self::UploadFiles => "upload_files",
             Self::ComposeLoadout => "compose_loadout",
@@ -374,7 +525,7 @@ pub(crate) async fn activate_box(
     // reach the create (the flag requires its mode). Nothing set keeps
     // `None`: the deny-all default, which the policy module evaluates the
     // same as an explicit deny.
-    let policy = ActivationStep::CheckProject
+    let (policy, github_grants) = ActivationStep::CheckProject
         .run(async {
             let has_ingress = !port_mappings.is_empty()
                 || args.dynamic_ingress.is_some()
@@ -413,7 +564,17 @@ pub(crate) async fn activate_box(
                 &project_secrets,
                 full_breadth_acknowledged,
             )?;
-            Ok::<_, anyhow::Error>(policy)
+            // Gatehouse §6.2, BEP-003: a GitHub grant needs a node-local
+            // proxy, and then a held sign-in. Only the item's metadata is
+            // read, and nothing asks for a sign-in.
+            let identity = crate::mint::identity_path();
+            let control = crate::mint::control_path();
+            let github_grants = check_github_grants(
+                &project_secrets,
+                proxy_present(identity.as_deref(), control.as_deref()),
+                &bep::signin::HostKeychain,
+            )?;
+            Ok::<_, anyhow::Error>((policy, github_grants))
         })
         .await?;
     ActivationStep::StartDaemon
@@ -672,6 +833,23 @@ pub(crate) async fn activate_box(
             Ok::<_, anyhow::Error>(registered)
         })
         .await?;
+    // Gatehouse §6.2: a GitHub grant box with no box id or no stance has no
+    // proxy to serve its grant. It is refused before the create, and the
+    // row the registration bought is withdrawn (T66).
+    if let Err(refused) = grant_box_facts(
+        &github_grants,
+        request.config.box_id.map(|box_id| box_id.to_string()),
+        request.config.network,
+    ) {
+        withdraw_box_row(
+            control_sock.clone(),
+            request.config.name.as_deref(),
+            request.config.box_addresses,
+            request.config.box_id,
+        )
+        .await;
+        return Err(refused.into());
+    }
 
     use minimald_rpc::{ConfigureLoadout, ConfigureLoadoutRequest, CreateSession};
     // An autogen name can (rarely) collide with an existing session built
@@ -798,6 +976,68 @@ pub(crate) async fn activate_box(
         })
         .await?;
     let id = created.id;
+    // BEP-005: each GitHub grant's sign-in reference is minted for the id
+    // the box now holds, after the create's retries settled it. A failure
+    // abandons the activation and its row the same way a create failure
+    // does (T66).
+    // The proxy's hold on the box: dropped by a later step's failure, it
+    // forgets the box's declared egress there. It is kept once the session
+    // is active. A Ctrl-C exits the process with no drop, so it leaves the
+    // box at the proxy until the box's destroy forgets it (#2277).
+    let proxy_registration = ActivationStep::MintGrants
+        .run(async {
+            let box_id = registered
+                .as_ref()
+                .and_then(|registration| registration.box_id);
+            let grants = github_grants.clone();
+            let egress = request
+                .config
+                .policy
+                .egress
+                .as_ref()
+                .and_then(|egress| egress.allow_dns_hosts.clone())
+                .unwrap_or_default();
+            let network = request.config.network;
+            // The mint blocks on the proxy's control socket and the host
+            // keychain, so it runs off the runtime's workers.
+            let minted = tokio::task::spawn_blocking(move || {
+                mint_grants(
+                    grants,
+                    box_id.map(|box_id| box_id.to_string()),
+                    egress,
+                    network,
+                )
+            })
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|minted| minted);
+            match minted {
+                // Interim: the sealed values are dropped, so the grant's
+                // environment variable stays empty until BEP-007 delivers
+                // them. The flip is T42
+                // (https://github.com/gominimal/minimal/issues/2488).
+                Ok((minted, registration)) => {
+                    drop(minted);
+                    Ok(registration)
+                }
+                Err(error) => {
+                    // The session `CreateSession` just made is not finalized, and
+                    // the interrupt guard is not armed yet. Destroy it so `min ls`
+                    // does not keep a half-made session, as the finalize failure
+                    // does, and withdraw its row (T66).
+                    best_effort_destroy(&mut client, id).await;
+                    withdraw_box_row(
+                        control_sock.clone(),
+                        request.config.name.as_deref(),
+                        request.config.box_addresses,
+                        box_id,
+                    )
+                    .await;
+                    Err(error)
+                }
+            }
+        })
+        .await?;
     ActivationStep::ReportStart
         .run(async {
             // The registration's own half of the session-start output (T66): one line
@@ -1493,6 +1733,9 @@ pub(crate) async fn activate_box(
     // (the attach hand-off below and the user's own session are fair game
     // for interrupts, but not this cleanup).
     drop(interrupt_guard);
+    if let Some(registration) = proxy_registration {
+        registration.keep();
+    }
 
     // The `host_ip` interim: the box shares the node's own row, so its name
     // is held in the zone with no row behind it and answers NODATA instead
