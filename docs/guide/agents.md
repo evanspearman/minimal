@@ -37,12 +37,12 @@ packages = ["claude-code", "base", "git", "curl"]
 
 ## Passing through host credentials
 
-Use `patches` to give the agent access to host files it needs, like authentication state. Each patch maps a host `source` to a `dest` under the session user's home directory:
+Use `attachments` to give the agent access to host files it needs, like authentication state. Each attachment maps a host `source` to a `dest` under the session user's home directory:
 
 ```toml
 [defaults.session]
 packages = ["claude-code", "base", "git"]
-patches = [
+attachments = [
     { source = "~/.gitconfig", dest = "~/.gitconfig" },
     { source = "~/.ssh",       dest = "~/.ssh" },
 ]
@@ -56,11 +56,11 @@ ANTHROPIC_API_KEY = { inherit = true }
 ```
 
 Anything you pass through is available to the agent and to any code it runs: a
-patched `~/.ssh` means the agent can use your SSH keys, and an inherited
+copied-in `~/.ssh` means the agent can use your SSH keys, and an inherited
 `ANTHROPIC_API_KEY` is readable by every process in the session. Pass through
 the minimum the agent needs, and prefer scoped or short-lived credentials over
 long-lived ones. Activation helps you hold this line: each value inherited from
-your environment and each file patch is gated against your user policy, and
+your environment and each attachment is gated against your user policy, and
 anything your policy cannot decide is surfaced for approval before it enters
 the session.
 

@@ -203,7 +203,7 @@ one operation with only one of them hardened:
 |---|---|
 | `extract_tar_impl` with a `strip_prefix` | the same function without one |
 | `RelPath::try_new` | `EitherPath`'s struct literal |
-| `unpack_workspace_patches` ("the client is untrusted so we re-check") | `unpack_workspace_files` |
+| `unpack_workspace_attachments` ("the client is untrusted so we re-check") | `unpack_workspace_files` |
 
 None was a case of the threat being unknown. Each was knowledge that failed to
 reach the function next door. When you find a careful defence, the next

@@ -10,7 +10,7 @@ sequence** spanning two processes:
    that needs user gating.
 3. **Client gates** those pending items against the user policy.
 4. **Daemon assembles** the final `Composition`, the client streams
-   the composition's approved patch files up to the daemon, and the
+   the composition's approved attachment files up to the daemon, and the
    daemon materializes them into the sandbox home before promoting
    the session to `Active`.
 
@@ -21,7 +21,7 @@ verdicts that come back.
 ## End-to-end flow
 
 The daemon-side compose runs off the project files in the session's
-*daemon-side workspace*, and the composition's approved patches
+*daemon-side workspace*, and the composition's approved attachments
 must land on the daemon's disk before the session is attachable —
 so `min session activate` splits into four sequential RPCs bracketed by
 two file-tree uploads:
@@ -46,10 +46,10 @@ sequenceDiagram
     C->>D: SubmitVerdict carrying ContributionVerdict
     Note over D: Phase 4a — apply verdicts, assemble Composition, promote record Pending → Materializing
     D-->>C: BoxStep::Materialized { id }
-    Note over C: Phase 4b — collect approved patch (host_path, dest) pairs from contribution + verdict
-    C->>D: WorkspacePatchesTarZst upload (into <workspace>/patches/ atomically, marker written last)
+    Note over C: Phase 4b — collect approved attachment (host_path, dest) pairs from contribution + verdict
+    C->>D: WorkspaceAttachmentsTarZst upload (into <workspace>/attachments/ atomically, marker written last)
     C->>D: FinalizeSession { session_id }
-    Note over D: Phase 4c — check marker, copy patches into sandbox home, promote Materializing → Active
+    Note over D: Phase 4c — check marker, copy attachments into sandbox home, promote Materializing → Active
     D-->>C: FinalizeSessionResponse (empty)
     Note over D: Launcher consumes the Composition at shell-mint time
 ```
@@ -77,18 +77,18 @@ contribution" and every project-declared package (whether local
 or upstream-supplied) would silently vanish.
 
 The second upload + `FinalizeSession` exists because the finalized
-`Composition` names patch source files that live on the *client's*
+`Composition` names attachment source files that live on the *client's*
 host filesystem (e.g. `~/.claude/**`, or a loadout's `~/.zshrc`).
 The daemon can't reach those paths itself, so the client is
 authoritative for streaming them up before the sandbox home can be
 populated. Splitting the finalize step means an attach against a
-session whose patches never arrived is refused (see
+session whose attachments never arrived is refused (see
 `BoxState::Materializing` below) rather than silently
 succeeding into an empty home. The client's `cmd_activate`
 unconditionally follows this order, even for `--sync none` (which
 just skips the *first* upload — Phase 2 then composes against a
 bare workspace and only whatever wire contribution came from
-Phase 1 survives; the patches upload still runs against the
+Phase 1 survives; the attachments upload still runs against the
 resulting composition).
 
 **A re-`ConfigureLoadout` against a session with a pending stash is
@@ -176,17 +176,17 @@ exits non-zero.
 `SessionComposer::compose` then drives the routing:
 
 - **All-decided fast path.** If the daemon collected no vars and
-  no patches, the composer assembles a `Composition` directly:
+  no attachments, the composer assembles a `Composition` directly:
   daemon-collected packages and lifecycle hooks pass through
   (neither has a per-item verdict slot in the wire schema), and
   the client's already-gated wire contribution is merged in via
   `Composition::extend_from_wire`. Returns
   `ComposeOutcome::Ready(composition)`.
-- **Pending path.** If the daemon collected any vars or patches,
+- **Pending path.** If the daemon collected any vars or attachments,
   the composer routes every one of them back to the client as
   pending items — the daemon never runs user policy, so no
   daemon-origin item is ever auto-decided. The
-  `ContributionResponse` carries the pending vars and patches
+  `ContributionResponse` carries the pending vars and attachments
   plus a copy of the daemon-collected lifecycle hooks (for
   client-side audit; hooks have no per-item verdict slot).
   **Packages never appear on the wire** — the response schema has
@@ -202,7 +202,7 @@ any `Inherit`/`InheritWithDefault` vars against the client env
 (`ResolvedVar::resolve_with` — so a bare `Inherit` the client env
 does not carry aborts the whole activation with
 `ComposeError::VarResolution`, unlike the Phase 1 loadout path that
-drops it with a warning), expands patch sources against the
+drops it with a warning), expands attachment sources against the
 already-gated vars from Phase 1 plus anything approved in this
 batch, applies the user policy, and prompts via local `PolicyHooks`
 when the policy can't decide. Result: one `ContributionVerdict`,
@@ -222,7 +222,7 @@ declared.
   and a `.bak` copy of the previous contents.
 - `NoPromptHook` — for `--no-prompt` and non-TTY runs. Fake-
   approves every unapproved item (returns `AllowOnce`) so
-  `handle_response` runs *both* the var and the patch hook and
+  `handle_response` runs *both* the var and the attachment hook and
   accumulates every item that would have needed approval into an
   `UnapprovedSummary`. `cmd_activate` inspects `summary.count()`
   after `compute_verdict` returns and, if non-zero, sends
@@ -242,11 +242,11 @@ order: items the policy auto-decides are emitted in input order,
 items routed through the hook land at the end. The daemon must
 correlate by `id`, not slice position.
 
-### Phase 4 — Daemon assembles, client uploads patches, daemon finalizes
+### Phase 4 — Daemon assembles, client uploads attachments, daemon finalizes
 
 Phase 4 has three sub-steps: the daemon assembles the finalized
 `Composition` (**4a**), the client streams the composition's
-approved patch files onto the daemon disk (**4b**), and the daemon
+approved attachment files onto the daemon disk (**4b**), and the daemon
 copies those files into the sandbox home and flips the record to
 `Active` (**4c**). The record status walks
 `Pending → Materializing → Active` — attach is refused until the
@@ -294,7 +294,7 @@ runs Phase 3 and sends a `ContributionVerdict` over the
    checks as the Materialized path.
 4. Promotes the record `Pending → Materializing` via `store.save`
    (not `Active` — that comes in Phase 4c after the client has
-   uploaded patches).
+   uploaded attachments).
 5. Replaces the actor's `BoxInner::Draft { pending: Some(_) }`
    with `BoxInner::Active { composition, ... }`.
    The actor is `Active` (it holds a composition in memory) while
@@ -311,29 +311,29 @@ created before a crash) has `pending: None` — nothing to resume.
 new session to retry. Survival across restarts is a separate
 concern.
 
-#### Phase 4b — Client uploads the composition's patches
+#### Phase 4b — Client uploads the composition's attachments
 
-The finalized `Composition` names patch source files by their
+The finalized `Composition` names attachment source files by their
 host paths. Only the client can reach those paths, so it's
 authoritative for the upload. `cmd_activate` collects the
 `(host_path, sandbox_destination)` pairs from two sources:
 
-- `contribution.patches` — patches contributed by client-side
+- `contribution.attachments` — attachments contributed by client-side
   loadouts, which never round-tripped through the daemon.
-- `approved_patches_from_verdict(&verdict)` — patches the daemon
+- `approved_patches_from_verdict(&verdict)` — attachments the daemon
   surfaced as pending in Phase 3 and the user approved during
   Phase 3 gating.
 
 Deduplicated by destination (the composer's cross-process check
 guarantees duplicates are exact matches with identical sources),
-the pairs stream up over the `WorkspacePatchesTarZst` subsystem.
-The daemon unpacks each entry into `<workspace>/patches/<dest>`
+the pairs stream up over the `WorkspaceAttachmentsTarZst` subsystem.
+The daemon unpacks each entry into `<workspace>/attachments/<dest>`
 via a staging-dir + atomic rename: entries land in
-`<workspace>/patches.tmp/`, and only on a clean stream end does
-the daemon `rename(patches.tmp → patches)` and then write the
-zero-byte `.patches_ready` marker. A mid-stream failure leaves
-`patches.tmp` behind for the next attempt to overwrite — the
-real `patches/` tree is never partial.
+`<workspace>/attachments.tmp/`, and only on a clean stream end does
+the daemon `rename(attachments.tmp → attachments)` and then write the
+zero-byte `.attachments_ready` marker. A mid-stream failure leaves
+`attachments.tmp` behind for the next attempt to overwrite — the
+real `attachments/` tree is never partial.
 
 Per-entry validation on the daemon side:
 
@@ -343,12 +343,12 @@ Per-entry validation on the daemon side:
   already rejects these on the wire, but the daemon re-checks
   because the client is not trusted.
 - **Marker collision**: an entry whose path exactly equals
-  `PATCHES_READY_MARKER` (`.patches_ready`) is rejected — writing
+  `ATTACHMENTS_READY_MARKER` (`.attachments_ready`) is rejected — writing
   it would first race the marker write, and then
-  `materialize_patches_into_home` would silently copy the emptied
+  `materialize_attachments_into_home` would silently copy the emptied
   marker into the sandbox home, zeroing whatever the user had
   there.
-- **Size cap**: entries larger than `MAX_PATCH_ENTRY_BYTES` (1
+- **Size cap**: entries larger than `MAX_ATTACHMENT_ENTRY_BYTES` (1
   GiB) are rejected before allocation, so a peer forging a tar
   header can't drive `Vec::with_capacity` to `usize::MAX` (panic)
   or trigger the allocator's OOM handler (whole-daemon abort).
@@ -360,7 +360,7 @@ propagating so no writes outlive the failing upload.
 
 #### Phase 4c — FinalizeSession
 
-The client calls `FinalizeSession` once the patches upload has
+The client calls `FinalizeSession` once the attachments upload has
 returned cleanly. The daemon:
 
 1. Refuses if the actor is `Materializing` on-disk but the
@@ -369,14 +369,14 @@ returned cleanly. The daemon:
    after a daemon restart (the composition lives in memory
    only). See the "restart-orphaned records are reaped or
    refused" invariant below.
-2. If the `Composition` has patches, checks that
-   `<workspace>/patches/.patches_ready` exists on disk. Missing
-   → `InvalidInput` with an instruction to upload patches and
-   retry. Composition-with-no-patches short-circuits this check
+2. If the `Composition` has attachments, checks that
+   `<workspace>/attachments/.attachments_ready` exists on disk. Missing
+   → `InvalidInput` with an instruction to upload attachments and
+   retry. Composition-with-no-attachments short-circuits this check
    (nothing to upload).
-3. Runs `materialize_patches_into_home`: for each
-   `SessionPatch`, copies
-   `<workspace>/patches/<destination>` to
+3. Runs `materialize_attachments_into_home`: for each
+   `SessionAttachment`, copies
+   `<workspace>/attachments/<destination>` to
    `<home>/<destination>`, creating parents as needed. Done once
    at finalize (not on every attach) so subsequent attaches see
    the same tree without re-copying and any in-sandbox
@@ -390,7 +390,7 @@ idempotent under a client retry after a lost ack.
 
 **Apply.** Whichever path produced the `Composition`, the launcher
 consumes it when the session's shell is minted: packages and vars
-are fed into the sandbox `Env`; patches (already materialized into
+are fed into the sandbox `Env`; attachments (already materialized into
 the sandbox home during Phase 4c) contribute file mappings that
 the launcher's rootfs setup picks up; lifecycle hooks are held on
 `BoxInner::Active { composition, ... }` and logged at `info!`
@@ -405,7 +405,7 @@ enumerates every composition item with its provenance.
 one shot) or `ConfigureLoadoutResponse::Pending { response }`
 (client must gate before the composition assembles). `SubmitVerdict`
 returns `BoxStep::Materialized { id }` on success.
-`WorkspacePatchesTarZst` is a channel subsystem, not a JSON RPC —
+`WorkspaceAttachmentsTarZst` is a channel subsystem, not a JSON RPC —
 it carries a zstd-compressed tar stream and closes on completion;
 errors return via the channel's stderr. `FinalizeSession` returns
 `FinalizeSessionResponse` (empty). The `id` is allocated at
@@ -427,15 +427,15 @@ mfile (or the mfile's project/package contributions are all
 empty), Phase 2 emits no pending items,
 `Composition::extend_from_wire` merges nothing, and the record
 persists as `Materializing` in one shot with an empty
-`Composition`. The composition has no patches, so Phase 4b is a
+`Composition`. The composition has no attachments, so Phase 4b is a
 no-op and `FinalizeSession` short-circuits the marker check and
 finalizes immediately. Internal callers today (sftp, exec,
 session-recovery) skip the file upload, skip user contribution,
 and drive this compressed path directly.
 
-`Composition`'s fields: `vars: Vec<SessionVar>`, `patches:
-Vec<SessionPatch>`, `packages: Vec<ProvenancedPackage>`,
-`lifecycle_hooks: Vec<ProvenancedHook>`. Vars and patches are
+`Composition`'s fields: `vars: Vec<SessionVar>`, `attachments:
+Vec<SessionAttachment>`, `packages: Vec<ProvenancedPackage>`,
+`lifecycle_hooks: Vec<ProvenancedHook>`. Vars and attachments are
 policy-gated (so they're wrapped as `Session*`); packages and hooks
 pass through unchanged.
 
@@ -448,7 +448,7 @@ treats `Denied` as fatal and silently drops `Ignored`; Phase 3
 (`gate_pending_vars`/`gate_pending_patches` in `client::handler`)
 emits a per-item `WireVarVerdict`/`WirePatchVerdict` for every
 outcome — the wire schema requires one verdict per pending id.
-Patches add a filesystem walk up front; vars don't.
+Attachments add a filesystem walk up front; vars don't.
 
 Both phases start each var by checking `ResolvedVar::carries_user_data`
 and short-circuiting to `Allowed` when it's `false` — see the
@@ -467,7 +467,7 @@ flowchart TD
     DE[/ComposeError::Denied/]
     HC[/ComposeError::HookContract/]
 
-    C -->|"patches only: pre-walk<br/>expand ~ and $VAR, walk fs, fan out"| S
+    C -->|"attachments only: pre-walk<br/>expand ~ and $VAR, walk fs, fan out"| S
     S -->|no| P3
     S -->|yes| P1
 
@@ -492,11 +492,11 @@ Below, in numbered prose:
    sandbox. The user policy exists to gate *user env* crossing
    into the sandbox; there's nothing to gate here. Auto-approve
    without consulting `allow`/`deny`/`ignore`.
-2. **Patch pre-walk.** For each `Patch`, expand `~` and `$VAR` in the
+2. **Attachment pre-walk.** For each `Attachment`, expand `~` and `$VAR` in the
    source pattern (using the already-gated vars from earlier in the
    batch plus the composer's `HOME` env lookup as tilde fallback).
    Walk the filesystem under each expanded root and fan out to one
-   `PatchFile` per matching file. Expand `~` and `$VAR` in
+   `AttachmentFile` per matching file. Expand `~` and `$VAR` in
    `PatchesPolicy` patterns the same way, against a temporary copy
    (the raw policy is preserved for round-trip).
 3. **Pass 1 — Categorize.** Each item runs through `Policy::check`,
@@ -542,14 +542,14 @@ overload:
 
 - **Resolve** — turn a deferred reference into a concrete value.
   `ResolvedVar::resolve_with` does this for `VarValue::Inherit*`;
-  patch source expansion does it for `$VAR` and `~` inside patterns.
+  attachment source expansion does it for `$VAR` and `~` inside patterns.
 - **Gate** — apply the `UserPolicy` (allow/deny/ignore + hooks).
   `gate_vars` and `gate_patches` are the per-domain gates.
 - **Compose** — the top-level pipeline that accumulates
   contributions and drives the gates. Each composer's `compose`
   method.
 
-`ResolvedVar`, `ResolvedPatch`, `ResolvedVar::resolve_with` use
+`ResolvedVar`, `ResolvedAttachment`, `ResolvedVar::resolve_with` use
 "resolve" narrowly. `Composition`, `ComposeError`, `ComposeOptions`,
 `compose_contribution` describe the pipeline.
 
@@ -588,7 +588,7 @@ overload:
 - **Env lookup lives on the composer.** Both composers default to
   `std::env::var` for the `contribute()` step and accept
   `with_env(...)` to pin a custom closure for tests. The
-  difference is in patch-source `~` expansion: `UserComposer`
+  difference is in attachment-source `~` expansion: `UserComposer`
   passes its `env("HOME")` as the tilde fallback, but
   `SessionComposer` passes `None` — daemon-side `~/...` patterns
   must resolve against a `HOME` carried in the client's wire
@@ -598,7 +598,7 @@ overload:
   through every gate and into the final `Composition`, so downstream
   layers (audit, inspection commands, error reporting) can attribute
   every surviving item to its contributor.
-- **Vars and patches are policy-gated; packages and hooks are not.**
+- **Vars and attachments are policy-gated; packages and hooks are not.**
   Package selection happens downstream in the graph layer; lifecycle
   hooks execute inside the sandbox. Neither needs an
   `allow`/`deny`/`ignore` gate.
@@ -618,8 +618,8 @@ overload:
   callers can't accidentally hand `PackageComposable::new` a bare
   directory path that the walker would then treat as a single
   file, silently dropping the whole mapping.
-- **Patches fan out before policy check.** A single `Patch` with a
-  glob source becomes N `PatchFile`s; each is checked independently.
+- **Attachments fan out before policy check.** A single `Attachment` with a
+  glob source becomes N `AttachmentFile`s; each is checked independently.
   In Phase 1 a `Denied` on any one file aborts the composition;
   in Phase 3 each file gets its own `WirePatchVerdict` so a Denied
   doesn't abort, it just rejects that file.
@@ -638,13 +638,13 @@ overload:
   malicious client can't submit `"../../etc/foo"` to escape the
   sandbox home.
 - **Source `~` is expanded at gate time; dest has no `~` to expand.**
-  Patch source `FileSet` patterns and `PatchesPolicy` patterns expand
+  Attachment source `FileSet` patterns and `PatchesPolicy` patterns expand
   `~` against a resolved `HOME` — a session var named `HOME` first,
   else the client-side fallback (`UserComposer`'s `env("HOME")` in
   Phase 1, `handle_response`'s `env("HOME")` in Phase 3). The
   `SessionComposer` (Phase 2/4 daemon side) has no fallback —
   daemon `~/...` patterns must resolve from the client's wire vars.
-  `PatchDest` is always relative to the sandbox user's home;
+  `AttachmentDest` is always relative to the sandbox user's home;
   absolute paths and `..` components are rejected at construction.
   A leading `~/` prefix on the destination is **silently stripped**:
   destinations are already home-relative, so a package author who
@@ -655,8 +655,8 @@ overload:
 - **Conflict detection is post-gate.** Per-domain rules:
   - **Vars**: same name + same resolved value → both kept (no
     conflict); same name + different values → `Conflict::VarValueMismatch`.
-  - **Patches**: same destination + same source → both kept;
-    same destination + different sources → `Conflict::PatchSourceMismatch`.
+  - **Attachments**: same destination + same source → both kept;
+    same destination + different sources → `Conflict::AttachmentSourceMismatch`.
   - **Packages**: deduplicated by name (set semantics, no value
     to disagree on).
   - **Lifecycle hooks**: concatenated unconditionally (hooks are
@@ -672,16 +672,16 @@ overload:
 
   Conflicts are fatal today. The user mitigates by adding the
   conflicting var name to their policy's `ignore` list (or, for
-  patches, a pattern matching the conflicting source paths) —
+  attachments, a pattern matching the conflicting source paths) —
   matched items are dropped during the gate, so the post-gate
   check has nothing to compare. Interactive resolution (replace
   fatal-on-conflict with a hook the user can answer) is not
   implemented; the `Result`-returning merge shape is the place it
   would land.
-- **Client is authoritative for the patches upload.** Patch source
+- **Client is authoritative for the attachments upload.** Attachment source
   files live on the client's host filesystem, so after a successful
-  Phase 4a the client streams the composition's approved patches
-  up via `WorkspacePatchesTarZst` and calls `FinalizeSession`. The
+  Phase 4a the client streams the composition's approved attachments
+  up via `WorkspaceAttachmentsTarZst` and calls `FinalizeSession`. The
   daemon can't reach those paths itself, so there's no daemon-side
   fallback if the client bails — the session sits at
   `Materializing` and is not attachable until `FinalizeSession`
@@ -693,28 +693,28 @@ overload:
   `BoxInner::Active { composition, .. }` state that Phase 4a
   produces is persisted to a `composition.json` sidecar alongside
   `record.json` so a restart can restore it for `Active` sessions.
-  But a `Materializing` record means the patches upload hasn't
-  completed — the sidecar exists but the patches marker doesn't,
+  But a `Materializing` record means the attachments upload hasn't
+  completed — the sidecar exists but the attachments marker doesn't,
   so `BoxManager::init` runs `reap_unresumable_records` at startup and
   deletes any `Pending` or `Materializing` record it finds (with an
   `info!` log). If a race lets one through, `finalize` refuses with
   an `InvalidInput` fault ("session is Materializing but has no
   in-memory composition") so the operator sees the problem
   instead of silently attaching to an empty-home shell.
-- **Patches unpack is atomic; the marker is the precondition.**
-  Entries land in `<workspace>/patches.tmp/` first; only on a
+- **Attachments unpack is atomic; the marker is the precondition.**
+  Entries land in `<workspace>/attachments.tmp/` first; only on a
   clean stream end does the daemon install the new tree at
-  `<workspace>/patches/` and write the `.patches_ready` marker.
+  `<workspace>/attachments/` and write the `.attachments_ready` marker.
   `FinalizeSession` checks the marker before promoting the
-  record. A mid-stream failure leaves `patches.tmp` behind for
-  the next attempt to overwrite; the real `patches/` tree is
+  record. A mid-stream failure leaves `attachments.tmp` behind for
+  the next attempt to overwrite; the real `attachments/` tree is
   never partial and the marker never lies.
 
   The install uses `renameat2(RENAME_EXCHANGE)` when a prior
-  `patches/` tree exists — the kernel swaps the two directories
+  `attachments/` tree exists — the kernel swaps the two directories
   atomically, so a `FinalizeSession` racing the swap sees either
   "old contents + old marker" or "new contents + new marker,"
-  never a gap where `patches/` is absent or where the marker
+  never a gap where `attachments/` is absent or where the marker
   points at content that isn't there. First install (no prior
   tree) falls through to a plain `rename`, which is atomic when
   the destination doesn't exist. The old contents (which end up
@@ -723,9 +723,9 @@ overload:
 
   Two concurrent uploads for the *same* session don't corrupt
   each other. Each upload writes to a per-upload unique staging
-  directory (`patches.upload.<nanos>.tmp`), so the unpack phases
+  directory (`attachments.upload.<nanos>.tmp`), so the unpack phases
   never share disk state. The install-and-marker step then takes
-  a per-session mutex (`BoxHandle::patches_upload_lock`), so
+  a per-session mutex (`BoxHandle::attachments_upload_lock`), so
   only one upload at a time is running the `RENAME_EXCHANGE +
   marker write` critical section — the second upload's swap
   observes the first's finished tree as its "old contents" and
@@ -733,13 +733,13 @@ overload:
   seconds-of-work install step, never across the
   minutes-of-work unpack, so throughput is unaffected.
 
-  The marker filename is reserved: an incoming patch entry whose
-  path exactly equals `PATCHES_READY_MARKER` is rejected by the
-  unpacker, since otherwise `materialize_patches_into_home` would
+  The marker filename is reserved: an incoming attachment entry whose
+  path exactly equals `ATTACHMENTS_READY_MARKER` is rejected by the
+  unpacker, since otherwise `materialize_attachments_into_home` would
   silently copy the emptied marker into the sandbox home.
 - **Peer-supplied entry sizes are capped, and a per-run byte
   budget bounds total in-flight memory.** Two limits stack:
-  - `MAX_PATCH_ENTRY_BYTES` (1 GiB) refuses any single tar entry
+  - `MAX_ATTACHMENT_ENTRY_BYTES` (1 GiB) refuses any single tar entry
     whose declared size would push `Vec::with_capacity` into an
     allocation panic or OOM (allocator abort → whole-daemon down).
   - `MAX_UNPACK_INFLIGHT_BYTES` (1 GiB) is a `Semaphore` acquired
@@ -749,14 +749,14 @@ overload:
     pipe into the SSH channel — instead of piling additional
     bodies into RAM.
   Peak daemon memory during unpack is therefore bounded by the
-  budget, *not* multiplied by CPU count. Legitimate patch
+  budget, *not* multiplied by CPU count. Legitimate attachment
   payloads are small dotfile trees; both ceilings exist as
   adversarial-input backstops, not throughput knobs.
 - **Internal invariants panic, not error.** `compute_dest` panics on
   precondition violation. These are bug signals, not recoverable.
 - **Terminating failure modes:** `Denied` (explicit policy reject),
   `Aborted` (hook returned `Abort`), `Conflict` (two contributors
-  disagree on a var value or patch source — see the post-gate
+  disagree on a var value or attachment source — see the post-gate
   detection invariant above; surfaces as `ComposeError::Conflict`
   from both `compose_contribution` and the cross-process daemon
   merge in `Composition::extend_from_wire`), `HookContract`
@@ -765,14 +765,14 @@ overload:
   reached a legacy `core::compose` path with no hook to prompt —
   Phase 2 now routes such items through `SessionComposer::compose`
   instead; this remains for the per-side `compose_contribution`
-  codepath), `PatchWalk` (IO-level filesystem walk failures),
+  codepath), `AttachmentWalk` (IO-level filesystem walk failures),
   `Expansion` (malformed `$VAR` / `~` pattern, or undefined var),
   `VarResolution` (a Phase 3 pending `Inherit` var couldn't be
-  resolved against the client env), `InvalidPendingPatchDest` (a
-  Phase 3 pending patch destination violates `PatchDest`
+  resolved against the client env), `InvalidPendingAttachmentDest` (a
+  Phase 3 pending attachment destination violates `AttachmentDest`
   invariants), `InvalidWireItem` (a wire-form item failed
   conversion back to its domain type, or the verdict is malformed:
   duplicate `PendingId` entries, missing entries for stashed items,
-  unknown ids, or a pending patch whose walk root can't be
+  unknown ids, or a pending attachment whose walk root can't be
   represented as a `HostAbsPath` for the synthetic-Ignored
   fallback).

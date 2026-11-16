@@ -147,13 +147,13 @@ the provider:
    contributions.
 
 The provider routes anything that needs your approval (chiefly environment
-values sourced from your own environment, and file patches) back to `min`,
+values sourced from your own environment, and attachments) back to `min`,
 which gates them against your user policy and, when the policy cannot decide,
 prompts you. Approved items, plus the selections that were already decided, are
 assembled into the final composition. The result carries four kinds of item:
 
 - **Variables**: environment variables set inside the session.
-- **File patches**: files copied into the session's home when it is finalized.
+- **Attachments**: files copied into the session's home when it is finalized.
 - **Packages**: the tools and libraries that make up the environment.
 - **Lifecycle hooks**: scripts declared to run at defined points in a
   session's life. Hooks are inert in the current release: a hook declared in

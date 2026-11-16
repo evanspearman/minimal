@@ -6,7 +6,7 @@ description: "Per-developer loadout reference: the loadout TOML schema, config-d
 # Loadouts
 
 A loadout is a per-developer bundle of packages, environment variables, file
-patches, and lifecycle hooks that the [`min` session CLI](./cli-min.md) layers
+attachments, and lifecycle hooks that the [`min` session CLI](./cli-min.md) layers
 into the sessions it activates. The project's
 [`minimal.toml`](./minimal-dot-toml.md) describes what every contributor's
 session needs; a loadout carries what *you* want on top (your editor,
@@ -74,7 +74,7 @@ either shape to get started.
 Two things to know if you do version-control a loadout:
 
 - A cloned `<name>/` contains a `.git` directory, which a broad
-  `$LOADOUT_ROOT/**/*` patch source would sweep into your session along with
+  `$LOADOUT_ROOT/**/*` attachment source would sweep into your session along with
   everything else. Prefer patterns that name what you actually want.
 - `<name>/` must be a real directory, not a symlink into a dotfiles repo
   elsewhere: a loadout's [external hook scripts](#lifecycle_hooks) refuse a
@@ -90,7 +90,7 @@ with the user's dotfiles:
 description = "helix + zellij with my dotfiles"
 packages    = ["helix", "zellij"]
 
-patches = [
+attachments = [
     # Helix: single config files plus a themes directory.
     { dest = ".config/helix/config.toml", source = "~/dotfiles/helix/config.toml" },
     { dest = ".config/helix/languages.toml", source = "~/dotfiles/helix/languages.toml" },
@@ -221,15 +221,18 @@ name  = "weird-thing"
 value = "x"
 ```
 
-### `patches` - Files copied from the host into the session {#patches}
+### `attachments` - Files copied from the host into the session {#attachments}
 
 _Optional_
 
 Each row names a `source` on the host and a `dest` inside the session,
 with an optional `description`.
 
+The old name of this key, `patches`, is still read. A loadout that sets both
+`attachments` and `patches` fails to load, with a message that names the file.
+
 ```toml
-patches = [
+attachments = [
     { dest = ".psqlrc", source = "~/dotfiles/psqlrc" },
     { dest = "certs/",    source = "~/ca/*.pem" },
     { dest = ".config/nvim/", source = "~/dotfiles/nvim/**/*.lua" },
@@ -237,7 +240,7 @@ patches = [
 ```
 
 **`source`** is a host path or glob pattern, or a list of them (a list
-fans out into one independent patch per entry, each sharing the `dest` --
+fans out into one independent attachment per entry, each sharing the `dest` --
 so list entries only make sense with per-entry dests or glob entries):
 
 - A leading `~` expands to the host home directory. `$NAME` / `${NAME}`
@@ -274,7 +277,7 @@ By default the walker does not follow symlinks while enumerating glob
 matches; see [`follow_symlinks`](#follow_symlinks) and the
 [client config](#client-config).
 
-**Permissions** carry across. A patched file lands with the source file's
+**Permissions** carry across. A copied file lands with the source file's
 own permission bits, so a script stays executable and a `0600` key stays
 readable only by you. Two qualifications:
 
@@ -289,7 +292,7 @@ to the session user, whatever it was owned by on your host.
 
 #### `$LOADOUT_ROOT` - Files shipped with the loadout {#loadout_root}
 
-Not every file a loadout patches in belongs in your dotfiles. For the ones
+Not every file a loadout copies in belongs in your dotfiles. For the ones
 that exist only to serve this loadout, keep them beside it and name them
 with `$LOADOUT_ROOT`, which expands to a directory named after the loadout --
 the same directory its [external hook scripts](#lifecycle_hooks) resolve
@@ -310,7 +313,7 @@ in, which is what makes a loadout and its files one version-controllable tree:
 ```
 
 ```toml
-patches = [
+attachments = [
     { dest = ".config/helix/config.toml", source = "$LOADOUT_ROOT/config.toml" },
     { dest = ".config/helix/themes/",     source = "$LOADOUT_ROOT/themes/**/*.toml" },
 ]
@@ -324,14 +327,14 @@ directory whichever layout the loadout is filed in.
 
 Details worth knowing:
 
-- The reference is **only** available in the `source` of a patch a loadout
-  declared. In a [user policy](./user-policy.md) pattern, or in a patch a
+- The reference is **only** available in the `source` of an attachment a loadout
+  declared. In a [user policy](./user-policy.md) pattern, or in an attachment a
   project declared, it fails the activation rather than resolving to some
   other declarer's directory. `dest` is a path inside the session, so it has
   no use for it either.
 - The name is **reserved** here: a loadout that also declares a
-  `LOADOUT_ROOT` variable still patches from its own directory. The variable
-  reaches the session normally -- only patch sources ignore it.
+  `LOADOUT_ROOT` variable still copies from its own directory. The variable
+  reaches the session normally -- only attachment sources ignore it.
 - `$LOADOUT_ROOT` alone names a directory, which is a plain-directory
   source: it copies the whole tree (equivalent to `$LOADOUT_ROOT/**/*`),
   with the default VCS/dependency directory excludes and the 100 MiB size
@@ -396,7 +399,7 @@ named after the loadout — so `dev.toml`'s scripts live in `dev/`, and a
 ```
 
 This is the same directory [`$LOADOUT_ROOT`](#loadout_root) names, so a
-loadout's scripts and the files it patches in live together.
+loadout's scripts and the files it copies in live together.
 
 A script must resolve to a regular file inside that directory. Symlinks are
 rejected rather than followed, at every path component *and at the directory
@@ -449,12 +452,12 @@ always destroyable.
 removed. A hook file that still declares it is rejected with an error
 pointing at `on_destroy`.
 
-### `follow_symlinks` - Symlink handling for patch sources {#follow_symlinks}
+### `follow_symlinks` - Symlink handling for attachment sources {#follow_symlinks}
 
 _Optional_
 
 Overrides the client-wide `[loadouts].follow_symlinks` setting (see
-[client config](#client-config)) for this loadout's patches only. When
+[client config](#client-config)) for this loadout's attachments only. When
 unset, the client-wide setting applies.
 
 ```toml
@@ -523,7 +526,7 @@ follow_symlinks  = false
 | Key | Default | Description |
 |-----|---------|-------------|
 | `default_loadouts` | `[]` | Loadouts (by filename stem) applied to each new session when no `--loadout`/`--no-loadouts` flag is given |
-| `follow_symlinks` | `false` | Follow symlinks while enumerating loadout patch sources. Turn on when your dotfile tree is a symlink farm (stow, chezmoi) and you want the walk to descend through the links |
+| `follow_symlinks` | `false` | Follow symlinks while enumerating loadout attachment sources. Turn on when your dotfile tree is a symlink farm (stow, chezmoi) and you want the walk to descend through the links |
 
 A missing file is equivalent to the defaults; unknown keys are rejected so
 a typo (`[loadout]` for `[loadouts]`) fails loudly.
@@ -592,9 +595,9 @@ directory, one row per file:
 
 ```
   NAME                DESCRIPTION                           CONTRIBUTES
-* dev                 helix + zellij with my dotfiles       2 pkg / 4 var / 5 patch
-  extra                                                     1 pkg / 0 var / 0 patch
-  default (built-in)  orientation banner and shaped prompt  0 pkg / 3 var / 0 patch
+* dev                 helix + zellij with my dotfiles       2 pkg / 4 var / 5 attachment
+  extra                                                     1 pkg / 0 var / 0 attachment
+  default (built-in)  orientation banner and shaped prompt  0 pkg / 3 var / 0 attachment
 
   default (built-in) applied when no loadouts are configured
 
@@ -628,7 +631,7 @@ configuration. Merge semantics across all contributors:
   composition; there is no override precedence between loadouts and the
   project. The error's hint applies: add the name to your policy's
   `ignore` list to drop all contributors of that variable.
-- **Patches** with the same destination and different sources are likewise
+- **Attachments** with the same destination and different sources are likewise
   a conflict.
 - **Lifecycle hooks** concatenate in declaration order; setup transitions
   run in that order and teardown transitions in reverse.
@@ -638,7 +641,7 @@ Two loadouts with the same name cannot be applied together.
 Loadout contributions are gated by the user's policy
 (`<config>/minimal/user_policy.toml`): items you declare yourself
 automatically pass the `allow` check, but the policy's `deny` and `ignore`
-rules still apply: a loadout patch matching a `deny` pattern fails the
+rules still apply: a loadout attachment matching a `deny` pattern fails the
 composition on the client, before the daemon is involved. A missing policy
 file means an empty policy; a fresh install activates fine without it.
 
@@ -650,8 +653,8 @@ is bash unless a loadout says otherwise — see
 `bash --noprofile --rcfile <daemon rc> -i`, so it finds none of its startup
 files on its own: the daemon's rc is the only file it is given. That rc
 installs the [attached terminal](#attached-terminal) hook and then sources
-**your `~/.bashrc`** out of the session home, so a [patched-in](#patches)
-`.bashrc` applies — the same way a patched `.zshrc` or `config.fish` does
+**your `~/.bashrc`** out of the session home, so a [copied-in](#attachments)
+`.bashrc` applies — the same way a copied-in `.zshrc` or `config.fish` does
 for those shells.
 
 `~/.bashrc`, and nothing else — that is the file bash would read here on
@@ -661,12 +664,12 @@ its own, had `--rcfile` not displaced it. A session shell is an interactive
 `shopt login_shell` reports off inside it. Those files hold once-per-login
 setup, so running them here would be a thing bash does nowhere else.
 
-If your bash setup lives in `~/.bash_profile`, point the patch at
-`.bashrc` — a patch names its own destination, so the file's name on your
+If your bash setup lives in `~/.bash_profile`, point the attachment at
+`.bashrc` — an attachment names its own destination, so the file's name on your
 host doesn't have to be the name it lands under:
 
 ```toml
-patches = [
+attachments = [
     { dest = ".bashrc", source = "~/dotfiles/bash_profile" },
 ]
 ```
@@ -747,7 +750,7 @@ you is part of the declaration. A project sets it the same way through its
 Four things worth knowing:
 
 - **Every shell reads your startup file.** zsh, fish, and nushell find
-  theirs in the session home — which is where [patches](#patches) land —
+  theirs in the session home — which is where [attachments](#attachments) land —
   on their own; bash is handed none of its own files, so the daemon's rc
   sources yours for it ([above](#vars-in-the-attach-shell)). The one
   exception is `sh`, whose startup file *is* `$ENV` by POSIX rule, and
@@ -797,7 +800,7 @@ themselves do not read them: each hard-codes the path, so a composition
 that happens to set a variable of that name cannot redirect the refresh.
 
 The hooks live at each shell's own vendor/system integration point, inside
-the rootfs rather than the session home — so a loadout patch cannot collide
+the rootfs rather than the session home — so a loadout attachment cannot collide
 with one:
 
 | Shell | Hook location | At the prompt | Before a command |

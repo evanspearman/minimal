@@ -21,7 +21,7 @@ Before:
 #[derive(Debug)]
 pub enum Error {
     Var { source: crate::vars::Error },
-    Patch { source: crate::patches::Error },
+    Attachment { source: crate::attachments::Error },
     LifecycleHook { source: crate::lifecyclehook::Error },
 }
 
@@ -29,7 +29,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Var { source } => write!(f, "variable contribution failed: {source}"),
-            Self::Patch { source } => write!(f, "patch contribution failed: {source}"),
+            Self::Attachment { source } => write!(f, "attachment contribution failed: {source}"),
             Self::LifecycleHook { source } => write!(f, "lifecycle hook contribution failed: {source}"),
         }
     }
@@ -39,7 +39,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Var { source } => Some(source),
-            Self::Patch { source } => Some(source),
+            Self::Attachment { source } => Some(source),
             Self::LifecycleHook { source } => Some(source),
         }
     }
@@ -63,10 +63,10 @@ pub enum Error {
         #[from]
         source: crate::vars::Error,
     },
-    #[error("patch contribution failed: {source}")]
-    Patch {
+    #[error("attachment contribution failed: {source}")]
+    Attachment {
         #[from]
-        source: crate::patches::Error,
+        source: crate::attachments::Error,
     },
     #[error("lifecycle hook contribution failed: {source}")]
     LifecycleHook {

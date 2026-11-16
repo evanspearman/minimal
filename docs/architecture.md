@@ -82,7 +82,7 @@ client and the daemon: the client composes the user's loadouts and gates them
 against user policy; the daemon collects project- and package-level
 contributions and routes anything needing approval back to the client; the
 client gates those pending items and returns verdicts; the daemon assembles the
-final `Composition` (vars, file patches, packages, lifecycle hooks) for the
+final `Composition` (vars, attachments, packages, lifecycle hooks) for the
 apply layer. User policy is enforced only on the client; the daemon never runs
 it. The **boxes** crate holds these primitives. [Sessions composition](internal/sessions-composition.md)
 documents the full data flow (source: `crates/boxes/docs/COMPOSITION.md`).

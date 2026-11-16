@@ -50,12 +50,12 @@ This installs the tool into the running session and records it in `minimal.toml`
 
 ### Access host files
 
-By default, only your project directory is available inside the session. To bring specific host files or directories in, declare `patches` in the `[defaults.session]` table. Each patch names a `source` on the host and a `dest` under the session user's home directory:
+By default, only your project directory is available inside the session. To bring specific host files or directories in, declare `attachments` in the `[defaults.session]` table. Each attachment names a `source` on the host and a `dest` under the session user's home directory:
 
 ```toml
 [defaults.session]
 packages = ["git"]
-patches = [
+attachments = [
     { source = "~/.gitconfig", dest = "~/.gitconfig" },
     { source = "~/.ssh",       dest = "~/.ssh" },
 ]

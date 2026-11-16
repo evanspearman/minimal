@@ -1,5 +1,5 @@
 ---
-description: Loadouts are per-developer, session-level bundles of packages, vars, file patches, and lifecycle hooks that layer your personal environment on top of a project's shared config.
+description: Loadouts are per-developer, session-level bundles of packages, vars, attachments, and lifecycle hooks that layer your personal environment on top of a project's shared config.
 ---
 
 # Loadouts
@@ -109,26 +109,26 @@ VISUAL = "hx"
 Vars are the main lever for interactive setup: your prompt (`PS1`) and a
 one-time banner travel through `[vars]`, and they reach every shell. An rc
 file is the other lever — the shell started by `min session attach` sources
-the startup file you [patched](#file-patches) into the session home, bash's
+the startup file you [copied](#attachments) into the session home, bash's
 `.bashrc` included (plain `sh` is the one exception: its startup file is the
 daemon's `$ENV`). The [reference](../reference/loadouts.md#session-shell)
 walks through both in detail.
 
-### File patches
+### Attachments
 
-Patches copy files from your host into the session, which is how your
+Attachments copy files from your host into the session, which is how your
 dotfiles arrive. Each entry pairs a host `source` (a path, a glob, or a list
 of them) with a `dest` inside the session:
 
 ```toml
-patches = [
+attachments = [
     { dest = ".config/helix/config.toml", source = "~/dotfiles/helix/config.toml" },
     { dest = ".config/zellij/",           source = "~/dotfiles/zellij/**/*.kdl" },
 ]
 ```
 
 A source that does not exist on your host is skipped with a warning rather
-than failing activation, so you can opportunistically patch a dotfile tree
+than failing activation, so you can opportunistically copy a dotfile tree
 that may not be present on every machine.
 
 For files that exist only to serve one loadout, keep them beside it instead
@@ -136,7 +136,7 @@ and name them with `$LOADOUT_ROOT` — the directory next to the loadout file,
 named after the loadout, which is also where its hook scripts live:
 
 ```toml
-patches = [
+attachments = [
     { dest = ".config/helix/config.toml", source = "$LOADOUT_ROOT/config.toml" },
 ]
 ```
@@ -175,7 +175,7 @@ zellij multiplexer with your dotfiles looks like this:
 description = "helix + zellij with my dotfiles"
 packages    = ["helix", "zellij"]
 
-patches = [
+attachments = [
     { dest = ".config/helix/config.toml", source = "~/dotfiles/helix/config.toml" },
     { dest = ".config/zellij/",           source = "~/dotfiles/zellij/**/*.kdl" },
 ]
@@ -255,8 +255,8 @@ per-kind summary of what it contributes:
 
 ```
   NAME   DESCRIPTION                     CONTRIBUTES
-* dev    helix + zellij with my dotfiles 2 pkg / 1 var / 2 patch
-  extra                                  1 pkg / 0 var / 0 patch
+* dev    helix + zellij with my dotfiles 2 pkg / 1 var / 2 attachment
+  extra                                  1 pkg / 0 var / 0 attachment
 
 * default (from `[loadouts].default_loadouts`)
 ```
@@ -270,7 +270,7 @@ loadouts directory other than the default.
 ## Where to go next
 
 - The [loadout reference](../reference/loadouts.md) has the full TOML schema
-  for every field (`description`, `packages`, `[vars]`, `patches`,
+  for every field (`description`, `packages`, `[vars]`, `attachments`,
   `[[lifecycle_hooks]]`, and the rest), the client config keys, and the exact
   composition and conflict rules.
 - [Sessions](./sessions.md) explains the session model that loadouts layer

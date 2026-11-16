@@ -287,7 +287,7 @@ After this ships, a developer on a stock install with no identity plane runs ses
   verify:   cargo nextest run -p mfile defaults_merge_lists_union_scalars_replace
   property: For every pair of layers, merging unions list values in layer order, merges `vars` and `vars_lenient` by name with the more specific layer's value for a name both set, and replaces other scalars and tables with the more specific layer's.
 
-- **BOX-049** THE SYSTEM SHALL accept per-entry keys written flat (`timeout`, `pty_enabled`, and the `[machine]` and `on_oom` keys as the resources spec (gominimal/inbox#698; BRES) defines them) and keep the meaning of `packages`, `patches`, `vars` and `lifecycle_hooks`.
+- **BOX-049** THE SYSTEM SHALL accept per-entry keys written flat (`timeout`, `pty_enabled`, and the `[machine]` and `on_oom` keys as the resources spec (gominimal/inbox#698; BRES) defines them) and keep the meaning of `packages`, `attachments` (also read under its earlier name `patches`), `vars` and `lifecycle_hooks`.
   tier:     T0
   verify:   cargo nextest run -p mfile flat_per_entry_keys_and_legacy_keys_keep_meaning
 
@@ -392,7 +392,7 @@ After this ships, a developer on a stock install with no identity plane runs ses
   verify:   cargo nextest run -p mfile sealed_spec_applies_no_loadout
   <!-- architecture expansion order step 6, "selected loadouts (subject to loadout_mode)"; optional-feature on the setting; the gate reads the mode before the loadouts layer, so a loadout cannot open the gate that admits it; a loadout a flag names fails under BOX-173 before this layer; gominimal/minimal#3068 -->
 
-- **BOX-167** WHERE the `loadout_mode` that BOX-064's layers up to and including the entry set is `open` THE SYSTEM SHALL apply each selected loadout's packages, config-file patches, `vars`, `vars_lenient` and lifecycle hooks at BOX-064's selected-loadouts layer, with its config-file patches read under the client's `[loadout-file-rules]`.
+- **BOX-167** WHERE the `loadout_mode` that BOX-064's layers up to and including the entry set is `open` THE SYSTEM SHALL apply each selected loadout's packages, attachments, `vars`, `vars_lenient` and lifecycle hooks at BOX-064's selected-loadouts layer, with its attachments read under the client's `[loadout-file-rules]`.
   tier:     T0
   verify:   cargo nextest run -p mfile open_spec_applies_whole_loadout
 
@@ -435,7 +435,7 @@ After this ships, a developer on a stock install with no identity plane runs ses
   verify: cargo nextest run -p mfile constrained_loadout_mode_refused_before_loadouts
   <!-- a type that constrains `sealed` with an entry that sets `open` would otherwise open the gate, read the user's loadout files, and only then fail BOX-061's final check -->
 
-- **BOX-182** IF a config-file patch that BOX-167 reads meets an `ask` rule in the client's `[loadout-file-rules]` while the client has no terminal THEN THE SYSTEM SHALL deny the read and fail the expansion with exit 3, naming the file and the rule.
+- **BOX-182** IF an attachment that BOX-167 reads meets an `ask` rule in the client's `[loadout-file-rules]` while the client has no terminal THEN THE SYSTEM SHALL deny the read and fail the expansion with exit 3, naming the file and the rule.
   tier:   T0
   verify: cargo nextest run -p minimal loadout_file_ask_without_terminal_denied
   <!-- architecture, "Loadouts and secrets": an `ask` is answerable only at a TTY, so an unattended creation gets a denial rather than a silent upload -->

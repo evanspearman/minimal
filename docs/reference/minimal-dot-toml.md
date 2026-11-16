@@ -128,7 +128,7 @@ set `state_key`.
 
 Contributes to [sessions](../concepts/sessions.md) started
 on this project (`min session start`). It carries the same primitives as a
-[loadout](./loadouts.md) (packages, vars, patches, lifecycle hooks), scoped to
+[loadout](./loadouts.md) (packages, vars, attachments, lifecycle hooks), scoped to
 the project rather than the developer: where a loadout says "what this
 developer wants everywhere", the session block says "what every session
 working on this codebase needs". There is at most one per `minimal.toml`, and
@@ -139,8 +139,8 @@ it has no name or description.
 # Toolchain every contributor's session gets.
 packages = ["rustc", "cargo", "postgresql-client"]
 
-# Config that lives in the repo, patched into the session's home.
-patches = [
+# Config that lives in the repo, copied into the session's home.
+attachments = [
     { dest = ".cargo/config.toml", source = "config/cargo.toml" },
     { dest = ".psqlrc",            source = "config/psqlrc" },
 ]
@@ -182,11 +182,13 @@ on_activate = { type = "inline", value = "cargo check --workspace >/dev/null 2>&
   shell makes the session's attach shell that shell instead of bash. See
   [`SHELL` — Which shell an attach starts](./loadouts.md#session-shell) for
   the supported shells and the fallback behavior.
-- **`patches`**: `{ source, dest }` rows copying files into the session.
+- **`attachments`**: `{ source, dest }` rows copying files into the session.
   `dest` is relative to the session user's home directory; `source` resolves
   on the host, typically inside the repo. The one expansion a loadout has
   and a project does not is `$LOADOUT_ROOT`, which names a loadout's own
   directory; referencing it here fails the activation.
+  The old name of this key, `patches`, is still read. A table that sets both
+  `attachments` and `patches` is refused.
 - **`lifecycle_hooks`**: Scripts declared for session transition points
   (`on_activate`, `on_destroy`, `on_attach`, `on_detach`), run inside the
   session under POSIX `sh` — or under whatever a leading shebang names, for
@@ -260,7 +262,7 @@ table declares it, and `self` cannot name an entry. A file that breaks one
 of these rules fails to load with exit code 3.
 
 An entry writes its settings as flat keys, such as `timeout`, `pty_enabled`,
-`on_oom`, and the `[machine]` table. `packages`, `patches`, `vars`, and
+`on_oom`, and the `[machine]` table. `packages`, `attachments`, `vars`, and
 `lifecycle_hooks` mean the same in an entry as in
 [`[defaults.session]`](#session).
 

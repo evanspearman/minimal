@@ -203,7 +203,7 @@ name        = "dev"
 description = "helix + zellij with my dotfiles"
 packages    = ["helix", "zellij"]
 
-patches = [
+attachments = [
     # Helix: single config files plus a themes directory.
     { dest = ".config/helix/config.toml", source = "~/dotfiles/helix/config.toml" },
     { dest = ".config/helix/languages.toml", source = "~/dotfiles/helix/languages.toml" },
@@ -231,7 +231,7 @@ layout — so `git clone <repo> ~/.config/minimal/loadouts/dev` is enough to
 pick up a loadout someone else published. Lifecycle hooks such as
 `on_activate` run a command when a session is activated, as the loadout above
 does to warm Helix's grammar cache. The full
-schema (file patches, lifecycle hooks, environment-variable inheritance,
+schema (attachments, lifecycle hooks, environment-variable inheritance,
 composition rules) is in the
 [loadouts reference](docs/reference/loadouts.md).
 
