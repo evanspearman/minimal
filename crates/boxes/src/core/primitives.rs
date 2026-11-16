@@ -1,4 +1,4 @@
-//! Origin-free primitives for vars and patches.
+//! Origin-free primitives for vars and attachments.
 //!
 //! # Names
 //!
@@ -26,7 +26,7 @@
 //! # Provenance
 //!
 //! The primitives in this module are origin-free. A variable's or
-//! patch's provenance is determined by which source file it appears in
+//! attachment's provenance is determined by which source file it appears in
 //! — a [`Loadout`] is always user-originated; equivalent project /
 //! package primitives carry their own origins by virtue of where they
 //! live. The session-construction layer combines the three sources and
@@ -37,21 +37,21 @@
 //! # The `FileSet` primitive
 //!
 //! [`FileSet`] is the description of "which files" — a single glob pattern,
-//! reused for patch sources, allowlists, denylists, and ignore lists. The
+//! reused for attachment sources, allowlists, denylists, and ignore lists. The
 //! wire form is always a bare string; lists of patterns live one level
-//! up (at the patches array or in policy fields).
+//! up (at the attachments array or in policy fields).
 //!
 //! Path expansion is split by responsibility:
 //!
 //! - **`FileSet` itself** stores patterns as written. No expansion at
 //!   construction or matching time.
 //! - **The composer** (see [`crate::core::compose`]) expands leading
-//!   `~` in patch *source* patterns and in
+//!   `~` in attachment *source* patterns and in
 //!   [`PatchesPolicy`](crate::core::policy::PatchesPolicy) patterns at the
-//!   start of the patch gate, against the composer's `HOME` env lookup.
+//!   start of the attachment gate, against the composer's `HOME` env lookup.
 //!   Patterns retain their `~` form in returned policies for
 //!   round-trippability.
-//! - **[`PatchDest`] needs no expansion.** Every destination is
+//! - **[`AttachmentDest`] needs no expansion.** Every destination is
 //!   implicitly relative to the sandbox user's home directory; `~`
 //!   and absolute paths are rejected at construction.
 //! - **The apply layer** is responsible for `$VAR` expansion and
@@ -110,10 +110,10 @@ pub enum VarError {
     },
 }
 
-/// Errors produced when constructing patch types.
+/// Errors produced when constructing attachment types.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
-pub enum PatchError {
+pub enum AttachmentError {
     /// A pattern string failed to parse as a glob.
     #[error("invalid glob pattern `{pattern}`: {source}")]
     InvalidGlob {
@@ -121,16 +121,16 @@ pub enum PatchError {
         #[source]
         source: globset::Error,
     },
-    /// A patch destination was empty.
-    #[error("patch destination must not be empty")]
+    /// An attachment destination was empty.
+    #[error("attachment destination must not be empty")]
     EmptyDest,
-    /// A patch destination contained a `..` component, which is rejected
+    /// An attachment destination contained a `..` component, which is rejected
     /// before path canonicalization to avoid traversal attacks.
-    #[error("patch destination `{0}` must not contain `..` components")]
+    #[error("attachment destination `{0}` must not contain `..` components")]
     DestTraversal(Utf8PathBuf),
-    /// A patch destination decoded to an absolute path. Dests must be
+    /// An attachment destination decoded to an absolute path. Dests must be
     /// relative to the sandbox/home root.
-    #[error("Patch destination must be relative to the home directory: {0}")]
+    #[error("Attachment destination must be relative to the home directory: {0}")]
     AbsoluteDestPath(#[source] paths::Error),
     /// A directory walk failed while enumerating a [`FileSet`]'s
     /// matches — typically due to permission denial or a missing
@@ -170,16 +170,16 @@ pub enum PatchError {
     /// carry the lossy form for the error message.
     #[error("canonical path is not valid UTF-8: {path_lossy}")]
     NonUtf8CanonicalPath { path_lossy: String },
-    /// A plain-directory patch source exceeded the total size cap.
+    /// A plain-directory attachment source exceeded the total size cap.
     /// The walker stops enumerating at this point to prevent
     /// accidentally copying an unbounded tree into a session.
     #[error(
-        "patch source {root} exceeds the {limit_bytes} byte size cap \
+        "attachment source {root} exceeds the {limit_bytes} byte size cap \
          for plain-directory sources; split it into narrower globs \
          or raise the cap"
     )]
     SizeCapExceeded { root: Utf8PathBuf, limit_bytes: u64 },
-    /// The size of a file in a plain-directory patch source could not
+    /// The size of a file in a plain-directory attachment source could not
     /// be read, so the total-size cap cannot be enforced. The file is
     /// not emitted.
     #[error("failed to read size of {path}: {source}")]
@@ -801,7 +801,7 @@ impl From<VarValue> for crate::wire::primitives::WireVarSpec {
 ///
 /// # Wire format
 ///
-/// A bare string. Lists of patterns live one level up — at the patches
+/// A bare string. Lists of patterns live one level up — at the attachments
 /// array, or in the policy fields — where each entry is its own
 /// `FileSet`.
 ///
@@ -820,11 +820,11 @@ impl FileSet {
     ///
     /// # Errors
     ///
-    /// Returns [`PatchError::InvalidGlob`] if `pattern` fails to parse.
-    pub fn try_new(pattern: impl Into<String>) -> Result<Self, PatchError> {
+    /// Returns [`AttachmentError::InvalidGlob`] if `pattern` fails to parse.
+    pub fn try_new(pattern: impl Into<String>) -> Result<Self, AttachmentError> {
         let pattern = pattern.into();
         let glob = globset::Glob::new(&pattern)
-            .map_err(|source| PatchError::InvalidGlob { pattern, source })?;
+            .map_err(|source| AttachmentError::InvalidGlob { pattern, source })?;
         let matcher = glob.compile_matcher();
         Ok(Self { glob, matcher })
     }
@@ -925,7 +925,7 @@ impl FileSet {
     /// every file whose path matches this pattern.
     ///
     /// Per-entry failures (walk errors, non-UTF-8 paths) are accumulated
-    /// into the returned `Vec<PatchError>` rather than aborting the walk —
+    /// into the returned `Vec<AttachmentError>` rather than aborting the walk —
     /// callers decide whether a partial result is acceptable.
     ///
     /// `~` and `$VAR` are **not** expanded; the walker passes the raw
@@ -935,14 +935,14 @@ impl FileSet {
     /// Patterns with no literal path prefix (e.g. `**/*.pem`, `*.lua`)
     /// would have to start their walk from `/` — virtually never what
     /// the caller wants. Such patterns produce an empty result with a
-    /// single [`PatchError::NoWalkRoot`] entry instead of walking the entire
+    /// single [`AttachmentError::NoWalkRoot`] entry instead of walking the entire
     /// root filesystem.
     #[must_use]
-    pub fn resolve(&self, follow_links: bool) -> (Vec<HostPath>, Vec<PatchError>) {
+    pub fn resolve(&self, follow_links: bool) -> (Vec<HostPath>, Vec<AttachmentError>) {
         let Some(root) = self.walk_root() else {
             return (
                 Vec::new(),
-                vec![PatchError::NoWalkRoot {
+                vec![AttachmentError::NoWalkRoot {
                     pattern: self.pattern().to_owned(),
                 }],
             );
@@ -964,11 +964,11 @@ impl FileSet {
                         }
                     }
                     Ok(_) => {}
-                    Err(p) => errors.push(PatchError::NonUtf8Path {
+                    Err(p) => errors.push(AttachmentError::NonUtf8Path {
                         path_lossy: p.to_string_lossy().into_owned(),
                     }),
                 },
-                Err(source) => errors.push(PatchError::WalkFailure {
+                Err(source) => errors.push(AttachmentError::WalkFailure {
                     root: root_path.clone(),
                     source,
                 }),
@@ -1005,15 +1005,15 @@ impl<'de> serde::Deserialize<'de> for FileSet {
 }
 
 // =====================================================================
-// PatchDest
+// AttachmentDest
 // =====================================================================
 
-/// A validated patch destination, **relative to the sandbox user's
+/// A validated attachment destination, **relative to the sandbox user's
 /// home directory**.
 ///
-/// Every patch lands somewhere under `$HOME` inside the sandbox. A
+/// Every attachment lands somewhere under `$HOME` inside the sandbox. A
 /// future revision may introduce a separate type for non-home-rooted
-/// destinations; until then, `PatchDest` represents only the
+/// destinations; until then, `AttachmentDest` represents only the
 /// home-relative case.
 ///
 /// Rejected at construction:
@@ -1033,19 +1033,19 @@ impl<'de> serde::Deserialize<'de> for FileSet {
 /// a destination path cannot be passed to host I/O without going through
 /// a [`paths::Translator`] first.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct PatchDest(SandboxRelPath);
+pub struct AttachmentDest(SandboxRelPath);
 
-impl PatchDest {
-    /// Construct a `PatchDest` after validation and normalization.
+impl AttachmentDest {
+    /// Construct a `AttachmentDest` after validation and normalization.
     ///
     /// # Errors
     ///
-    /// Returns [`PatchError::EmptyDest`] for empty paths, or
-    /// [`PatchError::DestTraversal`] for paths containing `..` components.
-    pub fn try_new(path: impl Into<Utf8PathBuf>) -> Result<Self, PatchError> {
+    /// Returns [`AttachmentError::EmptyDest`] for empty paths, or
+    /// [`AttachmentError::DestTraversal`] for paths containing `..` components.
+    pub fn try_new(path: impl Into<Utf8PathBuf>) -> Result<Self, AttachmentError> {
         let path = path.into();
         if path.as_str().is_empty() {
-            return Err(PatchError::EmptyDest);
+            return Err(AttachmentError::EmptyDest);
         }
         // Destinations are semantically relative to the sandbox user's
         // home directory, so a leading `~/` is redundant — the package
@@ -1061,7 +1061,7 @@ impl PatchDest {
             None => path,
         };
         if path.as_str().is_empty() {
-            return Err(PatchError::EmptyDest);
+            return Err(AttachmentError::EmptyDest);
         }
         // Walk components: drop CurDir, fail on ParentDir, keep the
         // rest. RootDir (an absolute path) is allowed through here so
@@ -1071,12 +1071,12 @@ impl PatchDest {
         for component in path.components() {
             match component {
                 Utf8Component::CurDir => {}
-                Utf8Component::ParentDir => return Err(PatchError::DestTraversal(path)),
+                Utf8Component::ParentDir => return Err(AttachmentError::DestTraversal(path)),
                 other => normalized.push(other.as_str()),
             }
         }
         Ok(Self(
-            SandboxRelPath::try_new(normalized).map_err(PatchError::AbsoluteDestPath)?,
+            SandboxRelPath::try_new(normalized).map_err(AttachmentError::AbsoluteDestPath)?,
         ))
     }
 
@@ -1087,13 +1087,13 @@ impl PatchDest {
     }
 }
 
-impl serde::Serialize for PatchDest {
+impl serde::Serialize for AttachmentDest {
     fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         self.0.serialize(ser)
     }
 }
 
-impl<'de> serde::Deserialize<'de> for PatchDest {
+impl<'de> serde::Deserialize<'de> for AttachmentDest {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let p = Utf8PathBuf::deserialize(deserializer)?;
         Self::try_new(p).map_err(serde::de::Error::custom)
@@ -1101,10 +1101,10 @@ impl<'de> serde::Deserialize<'de> for PatchDest {
 }
 
 // =====================================================================
-// Patch / Patches
+// Attachment / Attachments
 // =====================================================================
 
-/// A single patch: a source path expression on the host and the
+/// A single attachment: a source path expression on the host and the
 /// destination inside the sandbox (relative to the sandbox user's home
 /// directory) where its content should land.
 ///
@@ -1119,23 +1119,23 @@ impl<'de> serde::Deserialize<'de> for PatchDest {
 /// destination *directory*. Enforcing this invariant requires expanded
 /// paths and is the apply layer's responsibility.
 ///
-/// Patches carry no provenance: which source declared a patch is known
+/// Attachments carry no provenance: which source declared an attachment is known
 /// to the session-construction layer that combines a [`Loadout`], a
 /// project config, and package specs.
 ///
 /// [`Loadout`]: crate::core::loadout::Loadout
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct Patch {
+pub struct Attachment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     source: String,
-    dest: PatchDest,
+    dest: AttachmentDest,
 }
 
-impl Patch {
-    /// Construct a new patch.
+impl Attachment {
+    /// Construct a new attachment.
     #[must_use]
-    pub fn new(source: impl Into<String>, dest: PatchDest) -> Self {
+    pub fn new(source: impl Into<String>, dest: AttachmentDest) -> Self {
         Self {
             source: source.into(),
             dest,
@@ -1151,7 +1151,7 @@ impl Patch {
 
     /// The destination path inside the sandbox.
     #[must_use]
-    pub fn dest(&self) -> &PatchDest {
+    pub fn dest(&self) -> &AttachmentDest {
         &self.dest
     }
 }
@@ -1170,18 +1170,18 @@ pub const OLD_ATTACHMENTS_KEY: &str = "patches";
 /// it to give a message that names both keys.
 pub const DUPLICATE_ATTACHMENTS: &str = "duplicate field `attachments`";
 
-/// An ordered collection of [`Patch`] entries — the wire form of an
+/// An ordered collection of [`Attachment`] entries — the wire form of an
 /// `attachments = [...]` array.
 ///
 /// At the wire layer, a single row may carry either one `source` pattern
-/// or a list. List-shaped rows fan out into one [`Patch`] per pattern
+/// or a list. List-shaped rows fan out into one [`Attachment`] per pattern
 /// (the `description` and `dest` are shared across the fan-out). After
-/// deserialization every [`Patch`] holds exactly one [`FileSet`].
+/// deserialization every [`Attachment`] holds exactly one [`FileSet`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(transparent)]
-pub struct Patches(Vec<Patch>);
+pub struct Attachments(Vec<Attachment>);
 
-impl<'de> serde::Deserialize<'de> for Patches {
+impl<'de> serde::Deserialize<'de> for Attachments {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
         #[serde(untagged)]
@@ -1194,7 +1194,7 @@ impl<'de> serde::Deserialize<'de> for Patches {
             #[serde(default)]
             description: Option<String>,
             source: Source,
-            dest: PatchDest,
+            dest: AttachmentDest,
         }
         let rows: Vec<Row> = Vec::deserialize(deserializer)?;
         let mut out = Vec::with_capacity(rows.len());
@@ -1205,14 +1205,14 @@ impl<'de> serde::Deserialize<'de> for Patches {
         } in rows
         {
             match source {
-                Source::One(s) => out.push(Patch {
+                Source::One(s) => out.push(Attachment {
                     description,
                     source: s,
                     dest,
                 }),
                 Source::Many(ss) => {
                     for s in ss {
-                        out.push(Patch {
+                        out.push(Attachment {
                             description: description.clone(),
                             source: s,
                             dest: dest.clone(),
@@ -1225,7 +1225,7 @@ impl<'de> serde::Deserialize<'de> for Patches {
     }
 }
 
-impl Patches {
+impl Attachments {
     /// Construct an empty collection. Useful as the start of a builder
     /// chain.
     #[must_use]
@@ -1233,76 +1233,76 @@ impl Patches {
         Self::default()
     }
 
-    /// Construct from a vector of patches.
+    /// Construct from a vector of attachments.
     #[must_use]
-    pub fn new(patches: Vec<Patch>) -> Self {
-        Self(patches)
+    pub fn new(attachments: Vec<Attachment>) -> Self {
+        Self(attachments)
     }
 
-    /// Append a patch in place.
-    pub fn push(&mut self, patch: Patch) {
-        self.0.push(patch);
+    /// Append an attachment in place.
+    pub fn push(&mut self, attachment: Attachment) {
+        self.0.push(attachment);
     }
 
-    /// Returns `true` if there are no patches.
+    /// Returns `true` if there are no attachments.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    /// Number of patches.
+    /// Number of attachments.
     #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
-    /// Iterate over the patches.
-    pub fn iter(&self) -> std::slice::Iter<'_, Patch> {
+    /// Iterate over the attachments.
+    pub fn iter(&self) -> std::slice::Iter<'_, Attachment> {
         self.0.iter()
     }
 
-    /// Append all patches from another collection.
-    pub fn extend(&mut self, other: Patches) {
+    /// Append all attachments from another collection.
+    pub fn extend(&mut self, other: Attachments) {
         self.0.extend(other.0);
     }
 }
 
-impl FromIterator<Patch> for Patches {
-    fn from_iter<I: IntoIterator<Item = Patch>>(iter: I) -> Self {
+impl FromIterator<Attachment> for Attachments {
+    fn from_iter<I: IntoIterator<Item = Attachment>>(iter: I) -> Self {
         Self(iter.into_iter().collect())
     }
 }
 
-impl<'a> IntoIterator for &'a Patches {
-    type Item = &'a Patch;
-    type IntoIter = std::slice::Iter<'a, Patch>;
+impl<'a> IntoIterator for &'a Attachments {
+    type Item = &'a Attachment;
+    type IntoIter = std::slice::Iter<'a, Attachment>;
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
     }
 }
 
-impl IntoIterator for Patches {
-    type Item = Patch;
-    type IntoIter = std::vec::IntoIter<Patch>;
+impl IntoIterator for Attachments {
+    type Item = Attachment;
+    type IntoIter = std::vec::IntoIter<Attachment>;
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
     }
 }
 
 // =====================================================================
-// ResolvedPatch
+// ResolvedAttachment
 // =====================================================================
 
-/// A single patch's resolved endpoints: where the file lives on the
+/// A single attachment's resolved endpoints: where the file lives on the
 /// host, and where it lands inside the sandbox (relative to the
 /// sandbox user's home directory).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ResolvedPatch {
+pub struct ResolvedAttachment {
     host_path: HostAbsPath,
     destination: SandboxRelPath,
 }
 
-impl ResolvedPatch {
+impl ResolvedAttachment {
     #[must_use]
     pub fn new(host_path: HostAbsPath, destination: SandboxRelPath) -> Self {
         Self {
@@ -1324,13 +1324,13 @@ impl ResolvedPatch {
         &self.destination
     }
 
-    /// Consume the [`ResolvedPatch`] and return `(host_path, destination)`.
+    /// Consume the [`ResolvedAttachment`] and return `(host_path, destination)`.
     pub fn into_parts(self) -> (HostAbsPath, SandboxRelPath) {
         (self.host_path, self.destination)
     }
 }
 
-impl core::fmt::Display for ResolvedPatch {
+impl core::fmt::Display for ResolvedAttachment {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
@@ -1341,8 +1341,8 @@ impl core::fmt::Display for ResolvedPatch {
     }
 }
 
-impl From<crate::wire::primitives::WireResolvedPatch> for ResolvedPatch {
-    fn from(p: crate::wire::primitives::WireResolvedPatch) -> Self {
+impl From<crate::wire::primitives::WireResolvedAttachment> for ResolvedAttachment {
+    fn from(p: crate::wire::primitives::WireResolvedAttachment) -> Self {
         Self {
             host_path: p.host_path,
             destination: p.destination,
@@ -1674,23 +1674,26 @@ mod tests {
         }
     }
 
-    // ---- PatchDest ----
+    // ---- AttachmentDest ----
 
     #[test]
-    fn patchdest_rejects_empty() {
-        assert!(matches!(PatchDest::try_new(""), Err(PatchError::EmptyDest)));
-    }
-
-    #[test]
-    fn patchdest_rejects_traversal() {
+    fn attachment_dest_rejects_empty() {
         assert!(matches!(
-            PatchDest::try_new("foo/../bar"),
-            Err(PatchError::DestTraversal(_))
+            AttachmentDest::try_new(""),
+            Err(AttachmentError::EmptyDest)
         ));
     }
 
     #[test]
-    fn patchdest_strips_leading_home_tilde() {
+    fn attachment_dest_rejects_traversal() {
+        assert!(matches!(
+            AttachmentDest::try_new("foo/../bar"),
+            Err(AttachmentError::DestTraversal(_))
+        ));
+    }
+
+    #[test]
+    fn attachment_dest_strips_leading_home_tilde() {
         // Package authors write `path = "~/.claude"` in their mfile
         // meaning "map onto sandbox home"; destinations are already
         // home-relative, so the tilde is redundant and must not
@@ -1704,24 +1707,27 @@ mod tests {
         for (input, expected) in cases {
             if expected.is_empty() {
                 assert!(
-                    matches!(PatchDest::try_new(input), Err(PatchError::EmptyDest)),
+                    matches!(
+                        AttachmentDest::try_new(input),
+                        Err(AttachmentError::EmptyDest)
+                    ),
                     "input {input} should reject as empty after tilde strip",
                 );
             } else {
-                let dest = PatchDest::try_new(input).expect(input);
+                let dest = AttachmentDest::try_new(input).expect(input);
                 assert_eq!(dest.as_sandbox_path().as_str(), expected, "input: {input}");
             }
         }
         // Bare `~` is also nonsensical as a destination — home root
         // itself isn't a file target — so it rejects as empty too.
         assert!(matches!(
-            PatchDest::try_new("~"),
-            Err(PatchError::EmptyDest)
+            AttachmentDest::try_new("~"),
+            Err(AttachmentError::EmptyDest)
         ));
     }
 
     #[test]
-    fn patchdest_drops_curdir_and_redundant_slashes() {
+    fn attachment_dest_drops_curdir_and_redundant_slashes() {
         let cases = [
             ("etc/./foo", "etc/foo"),
             ("etc//foo", "etc/foo"),
@@ -1731,60 +1737,61 @@ mod tests {
             ("etc//.//foo", "etc/foo"),
         ];
         for (input, expected) in cases {
-            let dest = PatchDest::try_new(input).expect(input);
+            let dest = AttachmentDest::try_new(input).expect(input);
             assert_eq!(dest.as_sandbox_path().as_str(), expected, "input: {input}");
         }
     }
 
     #[test]
-    fn patchdest_traversal_check_runs_after_normalization_walk() {
+    fn attachment_dest_traversal_check_runs_after_normalization_walk() {
         // `etc/.././foo` simplifies to `foo` superficially, but the
-        // `..` is present in the *components*. PatchDest::try_new
+        // `..` is present in the *components*. AttachmentDest::try_new
         // walks components and rejects on the first `..` regardless
         // of what later normalization would produce.
         assert!(matches!(
-            PatchDest::try_new("etc/.././foo"),
-            Err(PatchError::DestTraversal(_))
+            AttachmentDest::try_new("etc/.././foo"),
+            Err(AttachmentError::DestTraversal(_))
         ));
     }
 
     #[test]
-    fn patch_deserialize_rejects_bad_dest() {
-        let err = toml::from_str::<Wrap<Patch>>(r#"x = { dest = "foo/../bar", source = "a" }"#)
-            .unwrap_err();
+    fn attachment_deserialize_rejects_bad_dest() {
+        let err =
+            toml::from_str::<Wrap<Attachment>>(r#"x = { dest = "foo/../bar", source = "a" }"#)
+                .unwrap_err();
         assert!(err.to_string().contains(".."), "got: {err}");
     }
 
-    // ---- Patch / Patches ----
+    // ---- Attachment / Attachments ----
 
     #[test]
-    fn patch_with_string_source() {
-        let p: Patch = parse(r#"x = { dest = "etc/foo.conf", source = "./foo.conf" }"#);
+    fn attachment_with_string_source() {
+        let p: Attachment = parse(r#"x = { dest = "etc/foo.conf", source = "./foo.conf" }"#);
         assert_eq!(p.dest().as_sandbox_path().as_str(), "etc/foo.conf");
         assert_eq!(p.source(), "./foo.conf");
     }
 
     #[test]
-    fn patches_deserialize_from_array() {
+    fn attachments_deserialize_from_array() {
         let src = r#"
             x = [
                 { dest = "a", source = "a" },
                 { dest = "b", source = "b" },
             ]
         "#;
-        let ps: Patches = parse(src);
+        let ps: Attachments = parse(src);
         assert_eq!(ps.len(), 2);
     }
 
     #[test]
-    fn patches_fan_out_multi_pattern_source() {
+    fn attachments_fan_out_multi_pattern_source() {
         let src = r#"
             x = [
                 { dest = "wallpapers", source = ["a/*.jpg", "a/*.png"] },
             ]
         "#;
-        let ps: Patches = parse(src);
-        // One row, two patterns → two patches with the same dest.
+        let ps: Attachments = parse(src);
+        // One row, two patterns → two attachments with the same dest.
         assert_eq!(ps.len(), 2);
         let dests: Vec<_> = ps
             .iter()
@@ -1796,13 +1803,13 @@ mod tests {
     }
 
     #[test]
-    fn patches_fan_out_propagates_description() {
+    fn attachments_fan_out_propagates_description() {
         let src = r#"
             x = [
                 { description = "lovely-fonts", dest = "fonts", source = ["a.ttf", "b.ttf"] },
             ]
         "#;
-        let ps: Patches = parse(src);
+        let ps: Attachments = parse(src);
         assert_eq!(ps.len(), 2);
         // `description` is private; the Debug output reveals it. Both
         // fan-out entries must carry the same description as the source row.
@@ -1810,14 +1817,14 @@ mod tests {
         assert_eq!(dbg.matches("lovely-fonts").count(), 2);
     }
 
-    // ---- Patches builders ----
+    // ---- Attachments builders ----
 
     #[test]
-    fn patches_builder_surfaces_compose() {
-        let make = |s: &str| Patch::new(s, PatchDest::try_new(s).unwrap());
+    fn attachments_builder_surfaces_compose() {
+        let make = |s: &str| Attachment::new(s, AttachmentDest::try_new(s).unwrap());
 
-        let collected: Patches = ["a", "b"].into_iter().map(make).collect();
-        let mut built = Patches::empty();
+        let collected: Attachments = ["a", "b"].into_iter().map(make).collect();
+        let mut built = Attachments::empty();
         built.push(make("a"));
         built.push(make("b"));
         assert_eq!(collected, built);
@@ -1825,10 +1832,10 @@ mod tests {
     }
 
     #[test]
-    fn patches_extend_appends_other_collection() {
-        let make = |s: &str| Patch::new(s, PatchDest::try_new(s).unwrap());
-        let mut ps: Patches = ["a", "b"].into_iter().map(make).collect();
-        let extra: Patches = ["c", "d"].into_iter().map(make).collect();
+    fn attachments_extend_appends_other_collection() {
+        let make = |s: &str| Attachment::new(s, AttachmentDest::try_new(s).unwrap());
+        let mut ps: Attachments = ["a", "b"].into_iter().map(make).collect();
+        let extra: Attachments = ["c", "d"].into_iter().map(make).collect();
         ps.extend(extra);
         let dests: Vec<_> = ps
             .iter()

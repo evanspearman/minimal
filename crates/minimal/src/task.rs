@@ -1094,7 +1094,7 @@ impl boxes::core::hooks::PolicyHooks for RefuseAndRecord {
         _policy: boxes::core::policy::PatchesPolicy,
         _items: &[boxes::core::hooks::Unapproved<'_, camino::Utf8Path>],
     ) -> boxes::core::hooks::HookResult<boxes::core::policy::PatchesPolicy> {
-        unreachable!("task env resolution never gates patches")
+        unreachable!("task env resolution never gates attachments")
     }
 }
 
@@ -1718,10 +1718,10 @@ pub(crate) async fn run_entry(
     )
     .await?;
 
-    // Client-side loadout patches land in the composition whether the
-    // configure response is Materialized or Pending; daemon-side patches
+    // Client-side loadout attachments land in the composition whether the
+    // configure response is Materialized or Pending; daemon-side attachments
     // approved through a Pending gate are appended below.
-    let mut collected_patches = minimal_client::contribution_patch_uploads(&contribution);
+    let mut collected_attachments = minimal_client::contribution_attachment_uploads(&contribution);
 
     let configured = client
         .oneshot_rpc::<ConfigureLoadout>(ConfigureLoadoutRequest {
@@ -1774,7 +1774,7 @@ pub(crate) async fn run_entry(
                     s = if count == 1 { "" } else { "s" },
                 );
             }
-            collected_patches.extend(crate::approved_patches_from_verdict(&verdict));
+            collected_attachments.extend(crate::approved_patches_from_verdict(&verdict));
             crate::submit_verdict_and_wait(&mut client, session_id, verdict).await?;
         } else {
             let hooks = crate::prompt::InteractivePrompt::new(&policy_path, user_policy.clone());
@@ -1788,7 +1788,7 @@ pub(crate) async fn run_entry(
             )
             .await;
             if let Ok((_, _, ref approved)) = result {
-                collected_patches.extend(approved.iter().cloned());
+                collected_attachments.extend(approved.iter().cloned());
             }
             let final_policy = hooks.into_final_policy();
             if final_policy != initial_policy {
@@ -1802,11 +1802,11 @@ pub(crate) async fn run_entry(
     }
     let _ = initial_policy;
 
-    minimal_client::dedup_patch_uploads(&mut collected_patches);
+    minimal_client::dedup_attachment_uploads(&mut collected_attachments);
     if let Err(e) = crate::upload_and_finalize(
         &mut client,
         id,
-        &collected_patches,
+        &collected_attachments,
         &hook_scripts,
         finalize_hook_budget,
     )
@@ -2499,7 +2499,7 @@ mod tests {
             _policy: boxes::core::policy::PatchesPolicy,
             _items: &[boxes::core::hooks::Unapproved<'_, camino::Utf8Path>],
         ) -> boxes::core::hooks::HookResult<boxes::core::policy::PatchesPolicy> {
-            unreachable!("task env resolution never gates patches")
+            unreachable!("task env resolution never gates attachments")
         }
     }
 
@@ -2521,7 +2521,7 @@ mod tests {
             _policy: boxes::core::policy::PatchesPolicy,
             _items: &[boxes::core::hooks::Unapproved<'_, camino::Utf8Path>],
         ) -> boxes::core::hooks::HookResult<boxes::core::policy::PatchesPolicy> {
-            unreachable!("task env resolution never gates patches")
+            unreachable!("task env resolution never gates attachments")
         }
     }
 

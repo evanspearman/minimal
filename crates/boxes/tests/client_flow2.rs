@@ -15,7 +15,7 @@ use boxes::core::hooks::{HookResult, PolicyHooks, Unapproved};
 use boxes::core::policy::{PatchesPolicy, UserPolicy, VarsPolicy};
 use boxes::wire::policy::{WirePatchVerdict, WireVarVerdict};
 use boxes::wire::primitives::{
-    PendingId, WirePendingPatch, WirePendingVar, WireResolvedVar, WireSessionVar, WireSource,
+    PendingId, WirePendingAttachment, WirePendingVar, WireResolvedVar, WireSessionVar, WireSource,
     WireVarSpec,
 };
 use boxes::wire::request::ContributionResponse;
@@ -131,7 +131,7 @@ impl PolicyHooks for PanicHooks {
         _: PatchesPolicy,
         _: &[Unapproved<'_, camino::Utf8Path>],
     ) -> HookResult<PatchesPolicy> {
-        panic!("patch hook should not have been invoked")
+        panic!("attachment hook should not have been invoked")
     }
     // Overridden rather than left to the trait's fail-closed default:
     // the default aborts, which a test asserting "no prompt happened"
@@ -149,7 +149,7 @@ fn empty_response() -> ContributionResponse {
     ContributionResponse {
         session_id: session_id(),
         vars: vec![],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     }
 }
@@ -177,9 +177,9 @@ fn empty_response_produces_empty_verdict() {
         verdict.vars
     );
     assert!(
-        verdict.patches.is_empty(),
+        verdict.attachments.is_empty(),
         "expected empty, got {:?}",
-        verdict.patches
+        verdict.attachments
     );
 }
 
@@ -197,7 +197,7 @@ fn specified_var_allow_listed_is_approved() {
             source: package_source("helix"),
             carries_user_data: false,
         }],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     };
     let vars_policy = VarsPolicy::empty().try_with_allow(["EDITOR"]).unwrap();
@@ -235,7 +235,7 @@ fn inherit_var_resolves_against_env() {
             source: package_source("locales"),
             carries_user_data: false,
         }],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     };
     let policy =
@@ -271,7 +271,7 @@ fn inherit_with_default_falls_back() {
             source: package_source("locales"),
             carries_user_data: false,
         }],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     };
     let policy =
@@ -304,7 +304,7 @@ fn inherit_var_missing_env_errors() {
             source: package_source("strict"),
             carries_user_data: false,
         }],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     };
     let err = handle_response(
@@ -348,7 +348,7 @@ fn policy_deny_per_item() {
                 carries_user_data: false,
             },
         ],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     };
     let vars_policy = VarsPolicy::empty()
@@ -393,7 +393,7 @@ fn policy_ignore_per_item() {
             source: package_source("noisy"),
             carries_user_data: false,
         }],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     };
     let vars_policy = VarsPolicy::empty().try_with_ignore(["_*"]).unwrap();
@@ -425,7 +425,7 @@ fn hook_approves_unapproved() {
             source: package_source("p"),
             carries_user_data: false,
         }],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     };
     let (verdict, _) = handle_response(
@@ -454,7 +454,7 @@ fn hook_abort_propagates() {
             source: package_source("p"),
             carries_user_data: false,
         }],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     };
     let err = handle_response(
@@ -469,11 +469,11 @@ fn hook_abort_propagates() {
     assert!(matches!(err, ComposeError::Aborted), "got: {err:?}");
 }
 
-/// A pending patch's source pattern references a `$VAR` defined in
+/// A pending attachment's source pattern references a `$VAR` defined in
 /// the gated client vars (from Phase 1). Expansion succeeds and the
 /// matched files emit verdicts.
 #[test]
-fn patch_source_uses_gated_vars() {
+fn attachment_source_uses_gated_vars() {
     let tmp = tempfile::tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     fixture_tree(root, [("helix/themes/nord.toml", "# nord\n")]);
@@ -481,7 +481,7 @@ fn patch_source_uses_gated_vars() {
     let response = ContributionResponse {
         session_id: session_id(),
         vars: vec![],
-        patches: vec![WirePendingPatch {
+        attachments: vec![WirePendingAttachment {
             id: PendingId::new(1),
             source_pattern: "$HELIX_CONFIG/themes/*.toml".into(),
             destination: paths::SandboxRelPath::try_new(".config/helix/themes").unwrap(),
@@ -507,8 +507,8 @@ fn patch_source_uses_gated_vars() {
         &pinned_env(&[]),
     )
     .unwrap();
-    assert_eq!(verdict.patches.len(), 1);
-    match &verdict.patches[0] {
+    assert_eq!(verdict.attachments.len(), 1);
+    match &verdict.attachments[0] {
         WirePatchVerdict::Approved { id, host_path, .. } => {
             assert_eq!(*id, PendingId::new(1));
             assert!(host_path.as_str().ends_with("helix/themes/nord.toml"));
@@ -518,9 +518,9 @@ fn patch_source_uses_gated_vars() {
 }
 
 /// A pending var defined earlier in this response is visible to
-/// pending patches in the same response.
+/// pending attachments in the same response.
 #[test]
-fn patch_source_uses_batch_approved_vars() {
+fn attachment_source_uses_batch_approved_vars() {
     let tmp = tempfile::tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     fixture_tree(root, [("helix/themes/nord.toml", "# nord\n")]);
@@ -536,7 +536,7 @@ fn patch_source_uses_batch_approved_vars() {
             source: package_source("helix"),
             carries_user_data: false,
         }],
-        patches: vec![WirePendingPatch {
+        attachments: vec![WirePendingAttachment {
             id: PendingId::new(2),
             source_pattern: "$HELIX_CONFIG/themes/*.toml".into(),
             destination: paths::SandboxRelPath::try_new(".config/helix/themes").unwrap(),
@@ -564,12 +564,12 @@ fn patch_source_uses_batch_approved_vars() {
     .unwrap();
     assert!(matches!(verdict.vars[0], WireVarVerdict::Approved { .. }));
     assert!(matches!(
-        verdict.patches[0],
+        verdict.attachments[0],
         WirePatchVerdict::Approved { .. }
     ));
 }
 
-/// Companion to `patch_source_uses_batch_approved_vars` that
+/// Companion to `attachment_source_uses_batch_approved_vars` that
 /// actually exercises the vars-allow-list path. The parent uses a
 /// `Specified` var with `carries_user_data: false`, which the
 /// classifier short-circuits before the allow list ever runs — so
@@ -590,7 +590,7 @@ fn allow_rule_gates_env_derived_var() {
             source: package_source("helix"),
             carries_user_data: true,
         }],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     };
     let policy = UserPolicy::empty().with_vars(
@@ -627,7 +627,7 @@ fn allow_rule_gates_env_derived_var() {
 /// A multi-file glob fan-out yields one verdict per matched file;
 /// the deny pattern can reject one without aborting the others.
 #[test]
-fn multi_file_patch_yields_per_file_verdicts() {
+fn multi_file_attachment_yields_per_file_verdicts() {
     let tmp = tempfile::tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     fixture_tree(
@@ -642,7 +642,7 @@ fn multi_file_patch_yields_per_file_verdicts() {
     let response = ContributionResponse {
         session_id: session_id(),
         vars: vec![],
-        patches: vec![WirePendingPatch {
+        attachments: vec![WirePendingAttachment {
             id: PendingId::new(1),
             source_pattern: format!("{root}/themes/*"),
             destination: paths::SandboxRelPath::try_new(".config/helix/themes").unwrap(),
@@ -668,13 +668,13 @@ fn multi_file_patch_yields_per_file_verdicts() {
     .unwrap();
 
     // Three matched files → three verdicts under the same pending id.
-    assert_eq!(verdict.patches.len(), 3);
+    assert_eq!(verdict.attachments.len(), 3);
     let id = PendingId::new(1);
-    for v in &verdict.patches {
+    for v in &verdict.attachments {
         assert_eq!(verdict_patch_id(v), id);
     }
     let approved: Vec<&str> = verdict
-        .patches
+        .attachments
         .iter()
         .filter_map(|v| match v {
             WirePatchVerdict::Approved { host_path, .. } => Some(host_path.as_str()),
@@ -682,7 +682,7 @@ fn multi_file_patch_yields_per_file_verdicts() {
         })
         .collect();
     let denied: Vec<&str> = verdict
-        .patches
+        .attachments
         .iter()
         .filter_map(|v| match v {
             WirePatchVerdict::Denied { host_path, .. } => Some(host_path.as_str()),
@@ -703,7 +703,7 @@ fn hook_response(source: WireSource) -> ContributionResponse {
     ContributionResponse {
         session_id: session_id(),
         vars: vec![],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![WirePendingHook {
             id: PendingId::new(0),
             hook: WireLifecycleHook {
@@ -741,9 +741,9 @@ fn package_declared_hook_is_denied_without_prompting() {
         verdict.vars
     );
     assert!(
-        verdict.patches.is_empty(),
+        verdict.attachments.is_empty(),
         "expected empty, got {:?}",
-        verdict.patches
+        verdict.attachments
     );
     assert!(
         matches!(
@@ -858,8 +858,8 @@ fn project_hook_ignored_by_policy_is_dropped_quietly() {
     );
 }
 
-/// Patch-side parity for `policy_ignore_per_item`: a file matched
-/// by the patch policy's `ignore` rule produces an `Ignored`
+/// Attachment-side parity for `policy_ignore_per_item`: a file matched
+/// by the attachment policy's `ignore` rule produces an `Ignored`
 /// verdict (not Approved, not Denied).
 #[test]
 fn patch_policy_ignore_produces_ignored_verdict() {
@@ -870,7 +870,7 @@ fn patch_policy_ignore_produces_ignored_verdict() {
     let response = ContributionResponse {
         session_id: session_id(),
         vars: vec![],
-        patches: vec![WirePendingPatch {
+        attachments: vec![WirePendingAttachment {
             id: PendingId::new(1),
             source_pattern: format!("{root}/themes/*.toml"),
             destination: paths::SandboxRelPath::try_new(".config/helix/themes").unwrap(),
@@ -894,9 +894,9 @@ fn patch_policy_ignore_produces_ignored_verdict() {
         &pinned_env(&[]),
     )
     .unwrap();
-    assert_eq!(verdict.patches.len(), 1);
+    assert_eq!(verdict.attachments.len(), 1);
     assert!(matches!(
-        verdict.patches[0],
+        verdict.attachments[0],
         WirePatchVerdict::Ignored { .. }
     ));
 }
@@ -927,7 +927,7 @@ fn unapproved_vars_batched_into_one_hook_call() {
             _: PatchesPolicy,
             _: &[Unapproved<'_, camino::Utf8Path>],
         ) -> HookResult<PatchesPolicy> {
-            panic!("patch hook not expected")
+            panic!("attachment hook not expected")
         }
     }
 
@@ -951,7 +951,7 @@ fn unapproved_vars_batched_into_one_hook_call() {
                 carries_user_data: false,
             },
         ],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     };
 
@@ -1016,7 +1016,7 @@ fn hook_use_rule_with_updated_policy_approves() {
             source: package_source("p"),
             carries_user_data: false,
         }],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     };
     let (verdict, _) = handle_response(
@@ -1063,7 +1063,7 @@ fn hook_use_rule_without_decision_errors_as_hook_contract() {
             source: package_source("p"),
             carries_user_data: false,
         }],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     };
     let err = handle_response(
@@ -1113,7 +1113,7 @@ fn hook_wrong_decision_count_errors_as_hook_contract() {
             source: package_source("p"),
             carries_user_data: false,
         }],
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     };
     let err = handle_response(
@@ -1131,20 +1131,20 @@ fn hook_wrong_decision_count_errors_as_hook_contract() {
     );
 }
 
-/// A pending patch whose destination violates `PatchDest` invariants
-/// surfaces as [`ComposeError::InvalidPendingPatchDest`].
+/// A pending attachment whose destination violates `AttachmentDest` invariants
+/// surfaces as [`ComposeError::InvalidPendingAttachmentDest`].
 #[test]
-fn invalid_pending_patch_dest_errors() {
-    use boxes::core::primitives::PatchError;
+fn invalid_pending_attachment_dest_errors() {
+    use boxes::core::primitives::AttachmentError;
 
     let response = ContributionResponse {
         session_id: session_id(),
         vars: vec![],
-        patches: vec![WirePendingPatch {
+        attachments: vec![WirePendingAttachment {
             id: PendingId::new(1),
             source_pattern: "/tmp/nonexistent/*".into(),
             // Empty path passes `SandboxRelPath` validation but
-            // `PatchDest::try_new` rejects it.
+            // `AttachmentDest::try_new` rejects it.
             destination: paths::SandboxRelPath::try_new("").unwrap(),
             description: None,
             source: package_source("p"),
@@ -1163,18 +1163,18 @@ fn invalid_pending_patch_dest_errors() {
     assert!(
         matches!(
             err,
-            ComposeError::InvalidPendingPatchDest {
-                source: PatchError::EmptyDest
+            ComposeError::InvalidPendingAttachmentDest {
+                source: AttachmentError::EmptyDest
             }
         ),
         "got: {err:?}",
     );
 }
 
-/// Two pending patches whose source patterns each yield one
+/// Two pending attachments whose source patterns each yield one
 /// unapproved file: the handler batches them into a *single* hook
 /// call so the user sees one prompt per response, not one per
-/// pending patch.
+/// pending attachment.
 #[test]
 fn unapproved_files_batched_into_one_hook_call() {
     use std::cell::RefCell;
@@ -1209,15 +1209,15 @@ fn unapproved_files_batched_into_one_hook_call() {
     let response = ContributionResponse {
         session_id: session_id(),
         vars: vec![],
-        patches: vec![
-            WirePendingPatch {
+        attachments: vec![
+            WirePendingAttachment {
                 id: PendingId::new(1),
                 source_pattern: format!("{root}/a/*.toml"),
                 destination: paths::SandboxRelPath::try_new(".config/a").unwrap(),
                 description: None,
                 source: package_source("a"),
             },
-            WirePendingPatch {
+            WirePendingAttachment {
                 id: PendingId::new(2),
                 source_pattern: format!("{root}/b/*.toml"),
                 destination: paths::SandboxRelPath::try_new(".config/b").unwrap(),
@@ -1248,8 +1248,8 @@ fn unapproved_files_batched_into_one_hook_call() {
         vec![2],
         "expected both files in the same batch",
     );
-    assert_eq!(verdict.patches.len(), 2);
-    let ids: Vec<_> = verdict.patches.iter().map(verdict_patch_id).collect();
+    assert_eq!(verdict.attachments.len(), 2);
+    let ids: Vec<_> = verdict.attachments.iter().map(verdict_patch_id).collect();
     assert!(ids.contains(&PendingId::new(1)));
     assert!(ids.contains(&PendingId::new(2)));
 }

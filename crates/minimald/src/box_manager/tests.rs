@@ -117,7 +117,7 @@ fn approve_all(
                 },
             })
             .collect(),
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     }
 }
@@ -154,7 +154,7 @@ async fn create_active_session(mngr: &BoxManagerHandle) -> SessionId {
 /// Drives the whole `CreateSession → ConfigureLoadout →
 /// FinalizeSession` sequence in-process so the returned
 /// session's record is `Active` (attachable, hostname
-/// registered). No patches for these fixtures, so the
+/// registered). No attachments for these fixtures, so the
 /// composition-empty short-circuit in `finalize` covers the
 /// marker precondition.
 async fn create_active_session_with(
@@ -181,7 +181,7 @@ async fn create_active_session_contributing(
     handle
         .finalize()
         .await
-        .expect("finalize should succeed for a patchless composition");
+        .expect("finalize should succeed for a composition without attachments");
     id
 }
 
@@ -1380,7 +1380,7 @@ async fn create_session_accepts_non_empty_client_contribution() {
     );
     // Compose returned `Materialized` — the record status is
     // `Materializing`, not `Active`. Attach requires an
-    // explicit `FinalizeSession` after any patches have
+    // explicit `FinalizeSession` after any attachments have
     // uploaded; this fixture doesn't drive that step.
     assert_eq!(
         mngr.get_record(BoxKeyPredicate::Id(id))
@@ -1471,7 +1471,7 @@ async fn pending_session_activates_on_approving_verdict() {
 
     // SubmitVerdict promotes Pending → Materializing, not
     // Pending → Active. The client still has to upload
-    // patches (there are none for this fixture) and call
+    // attachments (there are none for this fixture) and call
     // FinalizeSession before the record advances to Active.
     assert_eq!(
         mngr.get_record(BoxKeyPredicate::Id(id))
@@ -1507,7 +1507,7 @@ async fn submit_verdict_on_active_session_returns_wrong_state() {
         .submit_verdict(ContributionVerdict {
             session_id: id,
             vars: vec![],
-            patches: vec![],
+            attachments: vec![],
             lifecycle_hooks: vec![],
         })
         .await
@@ -1568,7 +1568,7 @@ async fn denying_verdict_faults_and_leaves_session_resumable() {
                 name: pv.name.clone(),
             })
             .collect(),
-        patches: vec![],
+        attachments: vec![],
         lifecycle_hooks: vec![],
     };
     let step = handle
@@ -1894,8 +1894,8 @@ pub(crate) async fn active_session_needing(
         .configure_loadout(WireContribution::default())
         .await
         .expect("a project-only loadout gates nothing");
-    // The composition carries packages but no patches, so finalize skips
-    // the patches marker and the record lands `Active`.
+    // The composition carries packages but no attachments, so finalize skips
+    // the attachments marker and the record lands `Active`.
     handle.finalize().await.expect("finalize should succeed");
     id
 }
@@ -2439,7 +2439,7 @@ fn run_composer_empty_inputs_yield_ready_empty() {
         ComposeOutcome::Ready(composition) => {
             assert!(composition.packages().is_empty());
             assert!(composition.vars().is_empty());
-            assert!(composition.patches().is_empty());
+            assert!(composition.attachments().is_empty());
             assert!(composition.lifecycle_hooks().is_empty());
         }
         other => panic!("expected Ready, got {other:?}"),
@@ -2789,7 +2789,7 @@ async fn box_visible_dirs(mngr: &BoxManagerHandle, id: SessionId) -> Vec<DaemonA
         paths.working,
         paths.cache,
         paths.home,
-        paths.patches,
+        paths.attachments,
         paths.hooks,
     ]
 }
@@ -4728,7 +4728,7 @@ async fn reaped_paths(mngr: &BoxManagerHandle, id: SessionId) -> Vec<DaemonAbsPa
         object.workspace_path(),
         object.cache_path(),
         object.home_path(),
-        object.patches_path(),
+        object.attachments_path(),
         object.hooks_path(),
     ]
 }

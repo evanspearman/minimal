@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::primitives::{Patch, PatchDest, VarValue};
+use crate::core::primitives::{Attachment, AttachmentDest, VarValue};
 use camino::Utf8Path;
 use std::cell::RefCell;
 
@@ -41,9 +41,9 @@ fn pv_value(name: &str, value: &str, source: Source) -> ProvenancedVar {
     )
 }
 
-fn pp(source_pattern: &str, dest: &str, prov: Source) -> ProvenancedPatch {
-    ProvenancedPatch::new(
-        Patch::new(source_pattern, PatchDest::try_new(dest).unwrap()),
+fn pp(source_pattern: &str, dest: &str, prov: Source) -> ProvenancedAttachment {
+    ProvenancedAttachment::new(
+        Attachment::new(source_pattern, AttachmentDest::try_new(dest).unwrap()),
         prov,
     )
 }
@@ -176,7 +176,7 @@ impl PolicyHooks for ScriptedHook {
         _policy: PatchesPolicy,
         _items: &[Unapproved<'_, camino::Utf8Path>],
     ) -> HookResult<PatchesPolicy> {
-        panic!("patch hook not expected in these tests")
+        panic!("attachment hook not expected in these tests")
     }
 }
 
@@ -197,7 +197,7 @@ impl PolicyHooks for PanicHook {
         _: PatchesPolicy,
         _: &[Unapproved<'_, camino::Utf8Path>],
     ) -> HookResult<PatchesPolicy> {
-        panic!("patch hook should not have been invoked")
+        panic!("attachment hook should not have been invoked")
     }
 }
 
@@ -221,21 +221,21 @@ impl PolicyHooks for PassThroughHook {
     }
 }
 
-/// Build a `Patch` with a single-file source rooted at a tempdir.
-fn single_file_patch(name: &str, dest: &str) -> (tempfile::TempDir, Patch) {
+/// Build a `Attachment` with a single-file source rooted at a tempdir.
+fn single_file_attachment(name: &str, dest: &str) -> (tempfile::TempDir, Attachment) {
     let tmp = tempfile::tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap().to_path_buf();
     let file = root.join(name);
     std::fs::write(file.as_std_path(), "x").unwrap();
-    let patch = Patch::new(file.as_str(), PatchDest::try_new(dest).unwrap());
-    (tmp, patch)
+    let attachment = Attachment::new(file.as_str(), AttachmentDest::try_new(dest).unwrap());
+    (tmp, attachment)
 }
 
 // =================================================================
 // `$LOADOUT_ROOT` anchoring
 // =================================================================
 
-/// Where a patch's `$LOADOUT_ROOT` resolves is decided per patch,
+/// Where an attachment's `$LOADOUT_ROOT` resolves is decided per attachment,
 /// from the provenance it carries — not once for the whole batch.
 mod loadout_root_anchoring {
     use super::*;
@@ -244,11 +244,11 @@ mod loadout_root_anchoring {
         paths::HostAbsPath::try_new("/cfg/minimal/loadouts").unwrap()
     }
 
-    fn rooted_patch(loadout: &str) -> ProvenancedPatch {
-        ProvenancedPatch::new(
-            Patch::new(
+    fn rooted_attachment(loadout: &str) -> ProvenancedAttachment {
+        ProvenancedAttachment::new(
+            Attachment::new(
                 "$LOADOUT_ROOT/conf.toml",
-                PatchDest::try_new("conf.toml").unwrap(),
+                AttachmentDest::try_new("conf.toml").unwrap(),
             ),
             Source::UserLoadout {
                 name: loadout.into(),
@@ -260,12 +260,12 @@ mod loadout_root_anchoring {
     /// their own directories — this is what makes the reference
     /// mean "beside *me*" rather than "in the loadouts directory".
     #[test]
-    fn each_patch_anchors_at_its_own_loadouts_subdirectory() {
+    fn each_attachment_anchors_at_its_own_loadouts_subdirectory() {
         let dir = loadouts_dir();
-        let expanded = expand_patch_sources(
-            vec![rooted_patch("dev"), rooted_patch("ops")],
+        let expanded = expand_attachment_sources(
+            vec![rooted_attachment("dev"), rooted_attachment("ops")],
             &[],
-            PatchAnchors::default().with_loadouts_dir(Some(&dir)),
+            AttachmentAnchors::default().with_loadouts_dir(Some(&dir)),
             false,
         )
         .unwrap();
@@ -279,27 +279,27 @@ mod loadout_root_anchoring {
         );
     }
 
-    /// A project's patch has no loadout to be beside, even when a
+    /// A project's attachment has no loadout to be beside, even when a
     /// loadouts directory is in play for the same composition.
     #[test]
-    fn a_non_loadout_patch_has_no_anchor() {
-        let pp = ProvenancedPatch::new(
-            Patch::new(
+    fn a_non_loadout_attachment_has_no_anchor() {
+        let pp = ProvenancedAttachment::new(
+            Attachment::new(
                 "$LOADOUT_ROOT/conf.toml",
-                PatchDest::try_new("conf.toml").unwrap(),
+                AttachmentDest::try_new("conf.toml").unwrap(),
             ),
             project_source(),
         );
         // let-else rather than `unwrap_err`: the Ok side isn't
-        // `Debug`, and printing an expanded patch set adds nothing
+        // `Debug`, and printing an expanded attachment set adds nothing
         // to the failure message anyway.
-        let Err(err) = expand_patch_sources(
+        let Err(err) = expand_attachment_sources(
             vec![pp],
             &[],
-            PatchAnchors::default().with_loadouts_dir(Some(&loadouts_dir())),
+            AttachmentAnchors::default().with_loadouts_dir(Some(&loadouts_dir())),
             false,
         ) else {
-            panic!("a project patch must not resolve `$LOADOUT_ROOT`");
+            panic!("a project attachment must not resolve `$LOADOUT_ROOT`");
         };
         assert!(
             matches!(
@@ -313,14 +313,14 @@ mod loadout_root_anchoring {
     }
 
     /// A caller that never supplied a loadouts directory — the
-    /// daemon-response path — can't anchor a loadout patch either,
+    /// daemon-response path — can't anchor a loadout attachment either,
     /// rather than guessing a directory.
     #[test]
-    fn without_a_loadouts_dir_even_a_loadout_patch_has_no_anchor() {
-        let Err(err) = expand_patch_sources(
-            vec![rooted_patch("dev")],
+    fn without_a_loadouts_dir_even_a_loadout_attachment_has_no_anchor() {
+        let Err(err) = expand_attachment_sources(
+            vec![rooted_attachment("dev")],
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
             false,
         ) else {
             panic!("no loadouts dir means no anchor to resolve against");
@@ -342,10 +342,10 @@ mod loadout_root_anchoring {
     /// provenance carries an unvetted string.
     #[test]
     fn a_name_that_is_not_a_path_component_gets_no_anchor() {
-        let Err(err) = expand_patch_sources(
-            vec![rooted_patch("..")],
+        let Err(err) = expand_attachment_sources(
+            vec![rooted_attachment("..")],
             &[],
-            PatchAnchors::default().with_loadouts_dir(Some(&loadouts_dir())),
+            AttachmentAnchors::default().with_loadouts_dir(Some(&loadouts_dir())),
             false,
         ) else {
             panic!("`..` must not be joined into an anchor path");
@@ -366,34 +366,37 @@ mod loadout_root_anchoring {
 // Project-root anchoring
 // =================================================================
 
-/// A project-declared patch with a repo-relative source is joined
+/// A project-declared attachment with a repo-relative source is joined
 /// onto the project root so the absoluteness check passes.
 mod project_root_anchoring {
     use super::*;
 
-    /// A project patch with a relative source resolves against the
+    /// A project attachment with a relative source resolves against the
     /// project root carried in its provenance.
     #[test]
-    fn project_patch_relative_source_anchors_at_project_root() {
-        let pp = ProvenancedPatch::new(
-            Patch::new("config/myrc", PatchDest::try_new("~/.myrc").unwrap()),
+    fn project_attachment_relative_source_anchors_at_project_root() {
+        let pp = ProvenancedAttachment::new(
+            Attachment::new("config/myrc", AttachmentDest::try_new("~/.myrc").unwrap()),
             project_source(),
         );
-        let expanded = expand_patch_sources(vec![pp], &[], PatchAnchors::default(), false).unwrap();
+        let expanded =
+            expand_attachment_sources(vec![pp], &[], AttachmentAnchors::default(), false).unwrap();
         assert_eq!(expanded[0].source.pattern(), "/repo/config/myrc");
     }
 
-    /// A loadout patch with a relative source still fails with
-    /// `NotAbsolute` — only project patches get the project-root
+    /// A loadout attachment with a relative source still fails with
+    /// `NotAbsolute` — only project attachments get the project-root
     /// anchor.
     #[test]
-    fn loadout_patch_relative_source_is_still_not_absolute() {
-        let pp = ProvenancedPatch::new(
-            Patch::new("config/myrc", PatchDest::try_new("~/.myrc").unwrap()),
+    fn loadout_attachment_relative_source_is_still_not_absolute() {
+        let pp = ProvenancedAttachment::new(
+            Attachment::new("config/myrc", AttachmentDest::try_new("~/.myrc").unwrap()),
             user_source(),
         );
-        let Err(err) = expand_patch_sources(vec![pp], &[], PatchAnchors::default(), false) else {
-            panic!("a loadout patch with a relative source must fail");
+        let Err(err) =
+            expand_attachment_sources(vec![pp], &[], AttachmentAnchors::default(), false)
+        else {
+            panic!("a loadout attachment with a relative source must fail");
         };
         assert!(
             matches!(
@@ -404,25 +407,28 @@ mod project_root_anchoring {
         );
     }
 
-    /// An already-absolute project patch source is left alone.
+    /// An already-absolute project attachment source is left alone.
     #[test]
-    fn project_patch_absolute_source_is_unchanged() {
-        let pp = ProvenancedPatch::new(
-            Patch::new("/etc/foo", PatchDest::try_new("~/.foo").unwrap()),
+    fn project_attachment_absolute_source_is_unchanged() {
+        let pp = ProvenancedAttachment::new(
+            Attachment::new("/etc/foo", AttachmentDest::try_new("~/.foo").unwrap()),
             project_source(),
         );
-        let expanded = expand_patch_sources(vec![pp], &[], PatchAnchors::default(), false).unwrap();
+        let expanded =
+            expand_attachment_sources(vec![pp], &[], AttachmentAnchors::default(), false).unwrap();
         assert_eq!(expanded[0].source.pattern(), "/etc/foo");
     }
 
     /// `..` in a project-relative source is still rejected.
     #[test]
-    fn project_patch_relative_source_rejects_parent_traversal() {
-        let pp = ProvenancedPatch::new(
-            Patch::new("../escape", PatchDest::try_new("~/.escape").unwrap()),
+    fn project_attachment_relative_source_rejects_parent_traversal() {
+        let pp = ProvenancedAttachment::new(
+            Attachment::new("../escape", AttachmentDest::try_new("~/.escape").unwrap()),
             project_source(),
         );
-        let Err(err) = expand_patch_sources(vec![pp], &[], PatchAnchors::default(), false) else {
+        let Err(err) =
+            expand_attachment_sources(vec![pp], &[], AttachmentAnchors::default(), false)
+        else {
             panic!("`..` must be rejected even with a project root");
         };
         assert!(
@@ -656,16 +662,16 @@ mod vars_gating {
 }
 
 // =================================================================
-// Patches gating
+// Attachments gating
 // =================================================================
 
-mod patches_gating {
+mod attachments_gating {
     use super::*;
 
     #[test]
     fn user_origin_single_file_short_circuits() {
-        let (_tmp, patch) = single_file_patch("hello.txt", "config/hello.txt");
-        let pp = ProvenancedPatch::new(patch, user_source());
+        let (_tmp, attachment) = single_file_attachment("hello.txt", "config/hello.txt");
+        let pp = ProvenancedAttachment::new(attachment, user_source());
         let policy = PatchesPolicy::empty();
         let (resolved, _) = gate_patches(
             vec![pp],
@@ -673,7 +679,7 @@ mod patches_gating {
             Some(&PanicHook),
             ComposeOptions::default(),
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap();
         assert_eq!(resolved.len(), 1);
@@ -682,8 +688,8 @@ mod patches_gating {
 
     #[test]
     fn project_origin_goes_through_prompt() {
-        let (_tmp, patch) = single_file_patch("conf.toml", "etc/conf.toml");
-        let pp = ProvenancedPatch::new(patch, project_source());
+        let (_tmp, attachment) = single_file_attachment("conf.toml", "etc/conf.toml");
+        let pp = ProvenancedAttachment::new(attachment, project_source());
         let policy = PatchesPolicy::empty();
         let (resolved, _) = gate_patches(
             vec![pp],
@@ -691,7 +697,7 @@ mod patches_gating {
             Some(&PassThroughHook),
             ComposeOptions::default(),
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap();
         assert_eq!(resolved.len(), 1);
@@ -700,8 +706,8 @@ mod patches_gating {
 
     #[test]
     fn deny_via_policy_errors() {
-        let (_tmp, patch) = single_file_patch("secret.pem", "config/x");
-        let pp = ProvenancedPatch::new(patch, project_source());
+        let (_tmp, attachment) = single_file_attachment("secret.pem", "config/x");
+        let pp = ProvenancedAttachment::new(attachment, project_source());
         let policy = PatchesPolicy::empty().with_deny(["/**/*.pem"]);
         let err = gate_patches(
             vec![pp],
@@ -709,18 +715,18 @@ mod patches_gating {
             Some(&PassThroughHook),
             ComposeOptions::default(),
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap_err();
         assert!(matches!(err, ComposeError::Denied { .. }), "got: {err:?}");
     }
 
-    /// User-origin patches are still subject to `deny` — a deny
+    /// User-origin attachments are still subject to `deny` — a deny
     /// rule overrides the user's own loadout declaration.
     #[test]
     fn user_loadout_honors_deny() {
-        let (_tmp, patch) = single_file_patch("secret.pem", "config/x");
-        let pp = ProvenancedPatch::new(patch, user_source());
+        let (_tmp, attachment) = single_file_attachment("secret.pem", "config/x");
+        let pp = ProvenancedAttachment::new(attachment, user_source());
         let policy = PatchesPolicy::empty().with_deny(["/**/*.pem"]);
         let err = gate_patches(
             vec![pp],
@@ -728,7 +734,7 @@ mod patches_gating {
             Some(&PanicHook),
             ComposeOptions::default(),
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap_err();
         assert!(matches!(err, ComposeError::Denied { .. }), "got: {err:?}");
@@ -736,8 +742,8 @@ mod patches_gating {
 
     #[test]
     fn user_loadout_still_honors_ignore() {
-        let (_tmp, patch) = single_file_patch("trash.bak", "config/x");
-        let pp = ProvenancedPatch::new(patch, user_source());
+        let (_tmp, attachment) = single_file_attachment("trash.bak", "config/x");
+        let pp = ProvenancedAttachment::new(attachment, user_source());
         let policy = PatchesPolicy::empty().with_ignore(["/**/*.bak"]);
         let (resolved, _) = gate_patches(
             vec![pp],
@@ -745,7 +751,7 @@ mod patches_gating {
             Some(&PanicHook),
             ComposeOptions::default(),
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap();
         assert!(resolved.is_empty(), "expected empty, got {resolved:?}");
@@ -771,8 +777,8 @@ mod patches_gating {
         std::fs::write(root.join("skip.txt").as_std_path(), "x").unwrap();
 
         let pattern = format!("{root}/**/*.lua");
-        let patch = Patch::new(pattern, PatchDest::try_new("nvim").unwrap());
-        let pp = ProvenancedPatch::new(patch, user_source());
+        let attachment = Attachment::new(pattern, AttachmentDest::try_new("nvim").unwrap());
+        let pp = ProvenancedAttachment::new(attachment, user_source());
         let policy = PatchesPolicy::empty();
         let (mut resolved, _) = gate_patches(
             vec![pp],
@@ -780,87 +786,88 @@ mod patches_gating {
             Some(&PanicHook),
             ComposeOptions::default(),
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap();
-        resolved.sort_by_key(|sp| sp.patch().destination().as_str().to_owned());
+        resolved.sort_by_key(|sp| sp.attachment().destination().as_str().to_owned());
         let dests: Vec<_> = resolved
             .iter()
-            .map(|sp| sp.patch().destination().as_str())
+            .map(|sp| sp.attachment().destination().as_str())
             .collect();
         assert_eq!(dests, ["nvim/a.lua", "nvim/sub/b.lua"]);
     }
 
-    /// A patch whose walk root doesn't exist on the host is
+    /// An attachment whose walk root doesn't exist on the host is
     /// silently dropped with a `tracing::warn!`, not surfaced as
-    /// [`ComposeError::PatchWalk`]. A user activating a loadout
-    /// that opportunistically patches something absent (e.g. a
+    /// [`ComposeError::AttachmentWalk`]. A user activating a loadout
+    /// that opportunistically attachments something absent (e.g. a
     /// missing dotfile tree) shouldn't have activation fail.
     #[test]
-    fn missing_patch_source_is_dropped_not_error() {
-        let patch = Patch::new(
+    fn missing_attachment_source_is_dropped_not_error() {
+        let attachment = Attachment::new(
             "/definitely/does/not/exist/*",
-            PatchDest::try_new("x").unwrap(),
+            AttachmentDest::try_new("x").unwrap(),
         );
-        let pp = ProvenancedPatch::new(patch, user_source());
+        let pp = ProvenancedAttachment::new(attachment, user_source());
         let policy = PatchesPolicy::empty();
-        let (patches, _policy) = gate_patches(
+        let (attachments, _policy) = gate_patches(
             vec![pp],
             policy,
             Some(&PanicHook),
             ComposeOptions::default(),
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .expect("missing walk root should not error");
         assert!(
-            patches.is_empty(),
-            "missing source should yield no patches, got {patches:?}",
+            attachments.is_empty(),
+            "missing source should yield no attachments, got {attachments:?}",
         );
     }
 
-    /// A batch mixing missing and present patch sources keeps
+    /// A batch mixing missing and present attachment sources keeps
     /// the present ones through and warn-drops the missing —
     /// one bad path doesn't sink the whole activation.
     #[test]
-    fn missing_and_present_patches_partition_cleanly() {
+    fn missing_and_present_attachments_partition_cleanly() {
         let tmp = tempfile::tempdir().unwrap();
         let root = Utf8Path::from_path(tmp.path()).unwrap().to_path_buf();
         std::fs::write(root.join("real.txt").as_std_path(), "x").unwrap();
         let real_pattern = format!("{root}/real.txt");
 
-        let present = ProvenancedPatch::new(
-            Patch::new(&real_pattern, PatchDest::try_new("real.txt").unwrap()),
+        let present = ProvenancedAttachment::new(
+            Attachment::new(&real_pattern, AttachmentDest::try_new("real.txt").unwrap()),
             user_source(),
         );
-        let missing = ProvenancedPatch::new(
-            Patch::new(
+        let missing = ProvenancedAttachment::new(
+            Attachment::new(
                 "/definitely/does/not/exist/*",
-                PatchDest::try_new("m").unwrap(),
+                AttachmentDest::try_new("m").unwrap(),
             ),
             user_source(),
         );
         let policy = PatchesPolicy::empty();
-        let (patches, _) = gate_patches(
+        let (attachments, _) = gate_patches(
             vec![present, missing],
             policy,
             Some(&PanicHook),
             ComposeOptions::default(),
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .expect("mixed batch should not error");
-        let dests: Vec<&str> = patches
+        let dests: Vec<&str> = attachments
             .iter()
-            .map(|sp| sp.patch().destination().as_str())
+            .map(|sp| sp.attachment().destination().as_str())
             .collect();
         assert_eq!(dests, ["real.txt"]);
     }
 
     #[test]
     fn tilde_pattern_with_missing_home_var_errors() {
-        let patch = Patch::new("~/dotfiles/conf", PatchDest::try_new("conf").unwrap());
-        let pp = ProvenancedPatch::new(patch, user_source());
+        let attachment =
+            Attachment::new("~/dotfiles/conf", AttachmentDest::try_new("conf").unwrap());
+        let pp = ProvenancedAttachment::new(attachment, user_source());
         let policy = PatchesPolicy::empty();
         let err = gate_patches(
             vec![pp],
@@ -868,7 +875,7 @@ mod patches_gating {
             Some(&PanicHook),
             ComposeOptions::default(),
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap_err();
         assert!(
@@ -888,8 +895,9 @@ mod patches_gating {
         std::fs::create_dir_all(root.join("dotfiles").as_std_path()).unwrap();
         std::fs::write(root.join("dotfiles/conf").as_std_path(), "x").unwrap();
 
-        let patch = Patch::new("~/dotfiles/conf", PatchDest::try_new("conf").unwrap());
-        let pp = ProvenancedPatch::new(patch, user_source());
+        let attachment =
+            Attachment::new("~/dotfiles/conf", AttachmentDest::try_new("conf").unwrap());
+        let pp = ProvenancedAttachment::new(attachment, user_source());
         let policy = PatchesPolicy::empty();
         let vars = [home_var(root.as_str())];
         let (resolved, _) = gate_patches(
@@ -898,12 +906,12 @@ mod patches_gating {
             Some(&PanicHook),
             ComposeOptions::default(),
             &vars,
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(
-            resolved[0].patch().host_path().as_str(),
+            resolved[0].attachment().host_path().as_str(),
             root.join("dotfiles/conf").as_str(),
         );
     }
@@ -915,11 +923,11 @@ mod patches_gating {
         std::fs::create_dir_all(root.join(".ssh").as_std_path()).unwrap();
         std::fs::write(root.join(".ssh/id_rsa").as_std_path(), "secret").unwrap();
 
-        let patch = Patch::new(
+        let attachment = Attachment::new(
             root.join(".ssh/id_rsa").as_str(),
-            PatchDest::try_new("id_rsa").unwrap(),
+            AttachmentDest::try_new("id_rsa").unwrap(),
         );
-        let pp = ProvenancedPatch::new(patch, project_source());
+        let pp = ProvenancedAttachment::new(attachment, project_source());
 
         let policy = PatchesPolicy::empty().with_deny(["~/.ssh/**"]);
         let vars = [home_var(root.as_str())];
@@ -930,7 +938,7 @@ mod patches_gating {
             Some(&PassThroughHook),
             ComposeOptions::default(),
             &vars,
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap_err();
         assert!(matches!(err, ComposeError::Denied { .. }), "got: {err:?}");
@@ -938,8 +946,8 @@ mod patches_gating {
 
     #[test]
     fn policy_tilde_pattern_without_home_var_errors() {
-        let (_tmp, patch) = single_file_patch("conf.toml", "conf");
-        let pp = ProvenancedPatch::new(patch, user_source());
+        let (_tmp, attachment) = single_file_attachment("conf.toml", "conf");
+        let pp = ProvenancedAttachment::new(attachment, user_source());
         let policy = PatchesPolicy::empty().with_deny(["~/.ssh/**"]);
         let err = gate_patches(
             vec![pp],
@@ -947,7 +955,7 @@ mod patches_gating {
             Some(&PanicHook),
             ComposeOptions::default(),
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap_err();
         assert!(
@@ -965,8 +973,8 @@ mod patches_gating {
     /// otherwise: the pattern would be literal and never match.
     #[test]
     fn user_prefixed_tilde_is_rejected() {
-        let (_tmp, patch) = single_file_patch("conf.toml", "conf");
-        let pp = ProvenancedPatch::new(patch, user_source());
+        let (_tmp, attachment) = single_file_attachment("conf.toml", "conf");
+        let pp = ProvenancedAttachment::new(attachment, user_source());
         let policy = PatchesPolicy::empty().with_deny(["~someuser/.ssh/**"]);
         let err = gate_patches(
             vec![pp],
@@ -974,7 +982,7 @@ mod patches_gating {
             Some(&PanicHook),
             ComposeOptions::default(),
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap_err();
         assert!(
@@ -995,8 +1003,9 @@ mod patches_gating {
         let file = root.join("hello.txt");
         std::fs::write(file.as_std_path(), "x").unwrap();
 
-        let patch = Patch::new(file.as_str(), PatchDest::try_new("hello.txt").unwrap());
-        let pp = ProvenancedPatch::new(patch, user_source());
+        let attachment =
+            Attachment::new(file.as_str(), AttachmentDest::try_new("hello.txt").unwrap());
+        let pp = ProvenancedAttachment::new(attachment, user_source());
 
         let policy = PatchesPolicy::empty().with_allow(["~/.config/**"]);
         let vars = [home_var(root.as_str())];
@@ -1007,7 +1016,7 @@ mod patches_gating {
             Some(&PanicHook),
             ComposeOptions::default(),
             &vars,
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap();
 
@@ -1040,8 +1049,11 @@ mod patches_gating {
         let file = root.join("secret.pem");
         std::fs::write(file.as_std_path(), "x").unwrap();
 
-        let patch = Patch::new(file.as_str(), PatchDest::try_new("secret.pem").unwrap());
-        let pp = ProvenancedPatch::new(patch, project_source());
+        let attachment = Attachment::new(
+            file.as_str(),
+            AttachmentDest::try_new("secret.pem").unwrap(),
+        );
+        let pp = ProvenancedAttachment::new(attachment, project_source());
 
         let policy = PatchesPolicy::empty();
         let vars = [home_var(root.as_str())];
@@ -1052,7 +1064,7 @@ mod patches_gating {
             Some(&TildeDenyAddingHook),
             ComposeOptions::default(),
             &vars,
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap_err();
         assert!(matches!(err, ComposeError::Denied { .. }), "got: {err:?}");
@@ -1078,8 +1090,8 @@ mod patches_gating {
                 HookResult::decided_with_policy(vec![ItemDecision::UseRule; items.len()], updated)
             }
         }
-        let (_tmp, patch) = single_file_patch("conf.toml", "conf");
-        let pp = ProvenancedPatch::new(patch, project_source());
+        let (_tmp, attachment) = single_file_attachment("conf.toml", "conf");
+        let pp = ProvenancedAttachment::new(attachment, project_source());
         let policy = PatchesPolicy::empty();
         let err = gate_patches(
             vec![pp],
@@ -1087,7 +1099,7 @@ mod patches_gating {
             Some(&UnknownVarHook),
             ComposeOptions::default(),
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap_err();
         assert!(
@@ -1116,11 +1128,11 @@ mod patches_gating {
         let link = tmp_root.join("link");
         symlink(real.as_std_path(), link.as_std_path());
 
-        let patch = Patch::new(
+        let attachment = Attachment::new(
             format!("{link}/**/*.toml"),
-            PatchDest::try_new("etc").unwrap(),
+            AttachmentDest::try_new("etc").unwrap(),
         );
-        let pp = ProvenancedPatch::new(patch, user_source());
+        let pp = ProvenancedAttachment::new(attachment, user_source());
         let policy = PatchesPolicy::empty();
         let (resolved, _) = gate_patches(
             vec![pp],
@@ -1130,7 +1142,7 @@ mod patches_gating {
                 follow_symlinks: true,
             },
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap();
         assert_eq!(resolved.len(), 1);
@@ -1151,11 +1163,11 @@ mod patches_gating {
         let link_file = allowed_dir.join("secret");
         symlink(target_file.as_std_path(), link_file.as_std_path());
 
-        let patch = Patch::new(
+        let attachment = Attachment::new(
             format!("{allowed_dir}/**"),
-            PatchDest::try_new("etc").unwrap(),
+            AttachmentDest::try_new("etc").unwrap(),
         );
-        let pp = ProvenancedPatch::new(patch, project_source());
+        let pp = ProvenancedAttachment::new(attachment, project_source());
         let policy = PatchesPolicy::empty().with_deny([format!("{denied_dir}/**")]);
         let err = gate_patches(
             vec![pp],
@@ -1165,7 +1177,7 @@ mod patches_gating {
                 follow_symlinks: true,
             },
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap_err();
         assert!(matches!(err, ComposeError::Denied { .. }), "got: {err:?}");
@@ -1193,11 +1205,11 @@ mod patches_gating {
         let link_file = denied_dir.join("route");
         symlink(target_file.as_std_path(), link_file.as_std_path());
 
-        let patch = Patch::new(
+        let attachment = Attachment::new(
             format!("{denied_dir}/**"),
-            PatchDest::try_new("etc").unwrap(),
+            AttachmentDest::try_new("etc").unwrap(),
         );
-        let pp = ProvenancedPatch::new(patch, project_source());
+        let pp = ProvenancedAttachment::new(attachment, project_source());
         let policy = PatchesPolicy::empty().with_deny([format!("{denied_dir}/**")]);
         let err = gate_patches(
             vec![pp],
@@ -1207,7 +1219,7 @@ mod patches_gating {
                 follow_symlinks: true,
             },
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap_err();
         assert!(matches!(err, ComposeError::Denied { .. }), "got: {err:?}");
@@ -1220,11 +1232,11 @@ mod patches_gating {
         let canonical = std::fs::canonicalize(tmp.path()).unwrap();
         let root = Utf8Path::from_path(&canonical).unwrap().to_path_buf();
         std::fs::write(root.join("ok.txt").as_std_path(), "x").unwrap();
-        let patch = Patch::new(
+        let attachment = Attachment::new(
             format!("{root}/**/*.txt"),
-            PatchDest::try_new("etc").unwrap(),
+            AttachmentDest::try_new("etc").unwrap(),
         );
-        let pp = ProvenancedPatch::new(patch, project_source());
+        let pp = ProvenancedAttachment::new(attachment, project_source());
         let policy = PatchesPolicy::empty().with_allow([format!("{root}/**")]);
         let (resolved, _) = gate_patches(
             vec![pp],
@@ -1234,7 +1246,7 @@ mod patches_gating {
                 follow_symlinks: true,
             },
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap();
         assert_eq!(resolved.len(), 1);
@@ -1258,11 +1270,11 @@ mod patches_gating {
         let link = tmp_root.join("link_dir");
         symlink(real.as_std_path(), link.as_std_path());
 
-        let patch = Patch::new(
+        let attachment = Attachment::new(
             format!("{link}/**/*.toml"),
-            PatchDest::try_new("etc").unwrap(),
+            AttachmentDest::try_new("etc").unwrap(),
         );
-        let pp = ProvenancedPatch::new(patch, project_source());
+        let pp = ProvenancedAttachment::new(attachment, project_source());
 
         let policy = PatchesPolicy::empty().with_allow([format!("{link}/**")]);
         let (resolved, _) = gate_patches(
@@ -1271,7 +1283,7 @@ mod patches_gating {
             Some(&PanicHook),
             ComposeOptions::default(),
             &[],
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap();
         assert_eq!(resolved.len(), 1);
@@ -1343,8 +1355,8 @@ mod display_snapshots {
     }
 
     #[test]
-    fn conflict_patch_source_mismatch() {
-        let c = Conflict::PatchSourceMismatch {
+    fn conflict_attachment_source_mismatch() {
+        let c = Conflict::AttachmentSourceMismatch {
             dest: paths::SandboxRelPath::try_new(".config/helix/themes").unwrap(),
             disagreeing_sources: vec![
                 (
@@ -1361,11 +1373,11 @@ mod display_snapshots {
         };
         assert_eq!(
             c.to_string(),
-            "patch destination `.config/helix/themes` has conflicting sources:\n  \
+            "attachment destination `.config/helix/themes` has conflicting sources:\n  \
                  - \"/usr/share/helix/themes/nord.toml\" (from package `helix`)\n  \
                  - \"/home/u/dotfiles/themes/nord.toml\" (from user loadout `dev`)\n\
                  hint: add a pattern matching the conflicting source path(s) above \
-                 to your patch policy's ignore list to drop both, \
+                 to `ignore` under `[patches]` in user_policy.toml to drop both, \
                  or remove one of the contributors",
         );
     }
@@ -1482,42 +1494,42 @@ mod conflict_helpers {
         assert_eq!(disagreeing_values.len(), 3);
     }
 
-    // ---------------- check_patch_mismatches ----------------
+    // ---------------- check_attachment_mismatches ----------------
 
     #[test]
-    fn patches_distinct_dests_ok() {
+    fn attachments_distinct_dests_ok() {
         let items = vec![
             pp("/etc/foo", "config/foo", project_source()),
             pp("/etc/bar", "config/bar", user_source()),
         ];
         assert!(
-            check_patch_mismatches(
+            check_attachment_mismatches(
                 &items,
-                |p| p.patch().dest().as_sandbox_path(),
-                |p| p.patch().source(),
+                |p| p.attachment().dest().as_sandbox_path(),
+                |p| p.attachment().source(),
             )
             .is_ok()
         );
     }
 
     #[test]
-    fn patches_same_dest_same_source_ok() {
+    fn attachments_same_dest_same_source_ok() {
         let items = vec![
             pp("/etc/foo", "config/foo", project_source()),
             pp("/etc/foo", "config/foo", user_source()),
         ];
         assert!(
-            check_patch_mismatches(
+            check_attachment_mismatches(
                 &items,
-                |p| p.patch().dest().as_sandbox_path(),
-                |p| p.patch().source(),
+                |p| p.attachment().dest().as_sandbox_path(),
+                |p| p.attachment().source(),
             )
             .is_ok()
         );
     }
 
     #[test]
-    fn patches_same_dest_different_source_errors() {
+    fn attachments_same_dest_different_source_errors() {
         let items = vec![
             pp(
                 "/usr/share/nord.toml",
@@ -1532,14 +1544,14 @@ mod conflict_helpers {
                 Source::UserLoadout { name: "dev".into() },
             ),
         ];
-        let err = check_patch_mismatches(
+        let err = check_attachment_mismatches(
             &items,
-            |p| p.patch().dest().as_sandbox_path(),
-            |p| p.patch().source(),
+            |p| p.attachment().dest().as_sandbox_path(),
+            |p| p.attachment().source(),
         )
         .unwrap_err();
         match err {
-            Conflict::PatchSourceMismatch {
+            Conflict::AttachmentSourceMismatch {
                 dest,
                 disagreeing_sources,
             } => {
@@ -1550,7 +1562,7 @@ mod conflict_helpers {
         }
     }
 
-    // ---------------- check_patch_prefix_collisions ----------------
+    // ---------------- check_attachment_prefix_collisions ----------------
 
     #[test]
     fn prefix_collision_sibling_dests_ok() {
@@ -1561,14 +1573,15 @@ mod conflict_helpers {
             pp("/etc/bar", "config/bar", user_source()),
         ];
         assert!(
-            check_patch_prefix_collisions(&items, |p| p.patch().dest().as_sandbox_path()).is_ok()
+            check_attachment_prefix_collisions(&items, |p| p.attachment().dest().as_sandbox_path())
+                .is_ok()
         );
     }
 
     #[test]
     fn prefix_collision_same_dest_ok() {
         // Exact-equal destinations are the
-        // `PatchSourceMismatch` case, not this one. This check
+        // `AttachmentSourceMismatch` case, not this one. This check
         // must not fire on them regardless of whether the
         // sources agree.
         let items = vec![
@@ -1576,7 +1589,8 @@ mod conflict_helpers {
             pp("/etc/foo", "config/foo", user_source()),
         ];
         assert!(
-            check_patch_prefix_collisions(&items, |p| p.patch().dest().as_sandbox_path()).is_ok()
+            check_attachment_prefix_collisions(&items, |p| p.attachment().dest().as_sandbox_path())
+                .is_ok()
         );
     }
 
@@ -1590,7 +1604,8 @@ mod conflict_helpers {
             pp("/etc/foobar", "foobar", user_source()),
         ];
         assert!(
-            check_patch_prefix_collisions(&items, |p| p.patch().dest().as_sandbox_path()).is_ok()
+            check_attachment_prefix_collisions(&items, |p| p.attachment().dest().as_sandbox_path())
+                .is_ok()
         );
     }
 
@@ -1607,10 +1622,11 @@ mod conflict_helpers {
                 Source::UserLoadout { name: "dev".into() },
             ),
         ];
-        let err = check_patch_prefix_collisions(&items, |p| p.patch().dest().as_sandbox_path())
-            .unwrap_err();
+        let err =
+            check_attachment_prefix_collisions(&items, |p| p.attachment().dest().as_sandbox_path())
+                .unwrap_err();
         match err {
-            Conflict::PatchDestPrefixCollision {
+            Conflict::AttachmentDestPrefixCollision {
                 shorter,
                 longer,
                 contributors,
@@ -1635,14 +1651,18 @@ mod conflict_helpers {
             Source::UserLoadout { name: "dev".into() },
         );
         assert!(
-            check_patch_prefix_collisions(&[a.clone(), b.clone()], |p| p
-                .patch()
+            check_attachment_prefix_collisions(&[a.clone(), b.clone()], |p| p
+                .attachment()
                 .dest()
                 .as_sandbox_path())
             .is_err()
         );
         assert!(
-            check_patch_prefix_collisions(&[b, a], |p| p.patch().dest().as_sandbox_path()).is_err()
+            check_attachment_prefix_collisions(&[b, a], |p| p
+                .attachment()
+                .dest()
+                .as_sandbox_path())
+            .is_err()
         );
     }
 
@@ -1707,13 +1727,13 @@ mod merge {
 
     fn contribution_with(
         vars: Vec<ProvenancedVar>,
-        patches: Vec<ProvenancedPatch>,
+        attachments: Vec<ProvenancedAttachment>,
         packages: Vec<ProvenancedPackage>,
         hooks: Vec<ProvenancedHook>,
     ) -> Contribution {
         Contribution {
             vars,
-            patches,
+            attachments,
             packages,
             lifecycle_hooks: hooks,
         }
@@ -1725,9 +1745,9 @@ mod merge {
         left.merge(Contribution::new()).unwrap();
         assert!(left.vars.is_empty(), "expected empty, got {:?}", left.vars);
         assert!(
-            left.patches.is_empty(),
+            left.attachments.is_empty(),
             "expected empty, got {:?}",
-            left.patches
+            left.attachments
         );
         assert!(
             left.packages.is_empty(),
@@ -1818,10 +1838,10 @@ mod merge {
         assert_eq!(left.vars.len(), 2);
     }
 
-    // ---------------- patches ----------------
+    // ---------------- attachments ----------------
 
     #[test]
-    fn patches_distinct_dests_merge_cleanly() {
+    fn attachments_distinct_dests_merge_cleanly() {
         let mut left = contribution_with(
             vec![],
             vec![pp("/etc/foo", "config/foo", project_source())],
@@ -1835,14 +1855,14 @@ mod merge {
             vec![],
         );
         left.merge(right).unwrap();
-        assert_eq!(left.patches.len(), 2);
+        assert_eq!(left.attachments.len(), 2);
     }
 
-    /// Same: patches with the same dest but different sources
-    /// land in `self.patches`; conflict detection happens
+    /// Same: attachments with the same dest but different sources
+    /// land in `self.attachments`; conflict detection happens
     /// later, post-gate.
     #[test]
-    fn patches_same_dest_different_source_no_longer_errors_at_merge() {
+    fn attachments_same_dest_different_source_no_longer_errors_at_merge() {
         let mut left = contribution_with(
             vec![],
             vec![pp(
@@ -1866,7 +1886,7 @@ mod merge {
             vec![],
         );
         left.merge(right).unwrap();
-        assert_eq!(left.patches.len(), 2);
+        assert_eq!(left.attachments.len(), 2);
     }
 
     // ---------------- packages ----------------
@@ -1991,16 +2011,16 @@ mod merge {
 
     // ---------------- package-supplied fs / user-data filter ----------------
 
-    /// A package may not supply patches, nor vars that carry user
+    /// A package may not supply attachments, nor vars that carry user
     /// data (env-inherited values). Both are dropped; a package's
     /// static var and every non-package item survive.
     #[test]
-    fn package_supplied_patches_and_user_data_vars_are_dropped() {
+    fn package_supplied_attachments_and_user_data_vars_are_dropped() {
         let pkg_src = || Source::Package { name: "go".into() };
         let mut c = Contribution::new();
-        // Patches: one from a package (dropped), one from the project (kept).
-        c.push_patch(pp("pkg/src", "etc/pkg.conf", pkg_src()));
-        c.push_patch(pp("proj/src", "etc/proj.conf", project_source()));
+        // Attachments: one from a package (dropped), one from the project (kept).
+        c.push_attachment(pp("pkg/src", "etc/pkg.conf", pkg_src()));
+        c.push_attachment(pp("proj/src", "etc/proj.conf", project_source()));
         // Vars: package env-inherited (dropped), package static (kept),
         // project env-inherited (kept).
         c.push_var(ProvenancedVar::new(
@@ -2013,11 +2033,14 @@ mod merge {
         ));
         c.push_var(pv_value("EDITOR", "hx", project_source()));
 
-        c.drop_package_supplied_patches_and_user_data_vars();
+        c.drop_package_supplied_attachments_and_user_data_vars();
 
-        // Only the project patch survives.
-        assert_eq!(c.patches().len(), 1);
-        assert!(matches!(c.patches()[0].source(), Source::Project { .. }));
+        // Only the project attachment survives.
+        assert_eq!(c.attachments().len(), 1);
+        assert!(matches!(
+            c.attachments()[0].source(),
+            Source::Project { .. }
+        ));
 
         // The package's env-inherited var is gone; its static var and
         // the project var remain.
@@ -2036,15 +2059,15 @@ mod merge {
 
     /// An item requested by a package *and* another source still
     /// composes in: dropping the package's own entry leaves the
-    /// project/loadout entry (same patch dest / var name) intact,
-    /// because vars and patches are never deduped across sources.
+    /// project/loadout entry (same attachment dest / var name) intact,
+    /// because vars and attachments are never deduped across sources.
     #[test]
     fn item_from_package_and_another_source_survives_via_the_other_source() {
         let pkg_src = || Source::Package { name: "go".into() };
         let mut c = Contribution::new();
-        // Same patch destination from a package and the project.
-        c.push_patch(pp("pkg/src", "etc/shared.conf", pkg_src()));
-        c.push_patch(pp("proj/src", "etc/shared.conf", project_source()));
+        // Same attachment destination from a package and the project.
+        c.push_attachment(pp("pkg/src", "etc/shared.conf", pkg_src()));
+        c.push_attachment(pp("proj/src", "etc/shared.conf", project_source()));
         // Same env-inherited var name from a package and a loadout.
         c.push_var(ProvenancedVar::new(
             ResolvedVar::from_env_value("TOKEN".into(), "t".into()),
@@ -2052,11 +2075,14 @@ mod merge {
         ));
         c.push_var(pv_value("TOKEN", "t", user_source()));
 
-        c.drop_package_supplied_patches_and_user_data_vars();
+        c.drop_package_supplied_attachments_and_user_data_vars();
 
-        // The shared patch destination still composes — via the project.
-        assert_eq!(c.patches().len(), 1);
-        assert!(matches!(c.patches()[0].source(), Source::Project { .. }));
+        // The shared attachment destination still composes — via the project.
+        assert_eq!(c.attachments().len(), 1);
+        assert!(matches!(
+            c.attachments()[0].source(),
+            Source::Project { .. }
+        ));
         // The shared var still composes — via the loadout.
         assert_eq!(c.vars().len(), 1);
         assert!(matches!(c.vars()[0].source(), Source::UserLoadout { .. }));
@@ -2086,7 +2112,7 @@ mod merge {
         // Both disagreeing values survive; conflict will surface
         // later (post-gate) in `compose_contribution`.
         assert_eq!(left.vars.len(), 2);
-        assert_eq!(left.patches.len(), 2);
+        assert_eq!(left.attachments.len(), 2);
     }
 }
 
@@ -2144,7 +2170,7 @@ mod compose_conflicts {
             policy,
             Some(&PanicHooks),
             ComposeOptions::default(),
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap_err();
         assert!(
@@ -2187,7 +2213,7 @@ mod compose_conflicts {
             policy,
             Some(&PanicHooks),
             ComposeOptions::default(),
-            PatchAnchors::default(),
+            AttachmentAnchors::default(),
         )
         .unwrap();
         assert!(
@@ -2207,8 +2233,8 @@ mod compose_conflicts {
 mod extend_from_wire {
     use super::*;
     use crate::wire::primitives::{
-        WireLifecycleHook, WireOrientation, WirePackageRef, WireProvenancedHook, WireResolvedPatch,
-        WireResolvedVar, WireSessionPatch, WireSessionVar, WireSource,
+        WireLifecycleHook, WireOrientation, WirePackageRef, WireProvenancedHook,
+        WireResolvedAttachment, WireResolvedVar, WireSessionAttachment, WireSessionVar, WireSource,
     };
     use crate::wire::request::WireContribution;
 
@@ -2229,9 +2255,9 @@ mod extend_from_wire {
         }
     }
 
-    fn wire_patch(host: &str, dest: &str) -> WireSessionPatch {
-        WireSessionPatch {
-            patch: WireResolvedPatch {
+    fn wire_attachment(host: &str, dest: &str) -> WireSessionAttachment {
+        WireSessionAttachment {
+            attachment: WireResolvedAttachment {
                 host_path: paths::HostAbsPath::try_new(host).unwrap(),
                 destination: paths::SandboxRelPath::try_new(dest).unwrap(),
             },
@@ -2249,9 +2275,9 @@ mod extend_from_wire {
         )
     }
 
-    fn session_patch(host: &str, dest: &str, source: Source) -> SessionPatch {
-        SessionPatch {
-            patch: ResolvedPatch::new(
+    fn session_attachment(host: &str, dest: &str, source: Source) -> SessionAttachment {
+        SessionAttachment {
+            attachment: ResolvedAttachment::new(
                 paths::HostAbsPath::try_new(host).unwrap(),
                 paths::SandboxRelPath::try_new(dest).unwrap(),
             ),
@@ -2259,20 +2285,23 @@ mod extend_from_wire {
         }
     }
 
-    fn composition_with(vars: Vec<SessionVar>, patches: Vec<SessionPatch>) -> Composition {
+    fn composition_with(vars: Vec<SessionVar>, attachments: Vec<SessionAttachment>) -> Composition {
         Composition {
             vars,
-            patches,
+            attachments,
             packages: Vec::new(),
             lifecycle_hooks: Vec::new(),
             orientation: Orientation::default(),
         }
     }
 
-    fn wire_with(vars: Vec<WireSessionVar>, patches: Vec<WireSessionPatch>) -> WireContribution {
+    fn wire_with(
+        vars: Vec<WireSessionVar>,
+        attachments: Vec<WireSessionAttachment>,
+    ) -> WireContribution {
         WireContribution {
             vars,
-            patches,
+            attachments,
             requested_packages: vec![],
             lifecycle_hooks: vec![],
             orientation: WireOrientation::default(),
@@ -2282,7 +2311,7 @@ mod extend_from_wire {
 
     /// A wire contribution carrying a malformed lifecycle hook (all
     /// three callbacks empty) must error without partially extending
-    /// the [`Composition`]. The vars, patches, packages, and any
+    /// the [`Composition`]. The vars, attachments, packages, and any
     /// well-formed hooks in the same wire payload must not appear
     /// in the [`Composition`] after the failed call.
     #[test]
@@ -2296,7 +2325,7 @@ mod extend_from_wire {
                 },
                 source: WireSource::UserLoadout { name: "dev".into() },
             }],
-            patches: vec![],
+            attachments: vec![],
             requested_packages: vec![WirePackageRef {
                 name: "helix".into(),
                 source: WireSource::UserLoadout { name: "dev".into() },
@@ -2342,14 +2371,14 @@ mod extend_from_wire {
         assert_eq!(composition.vars.len(), 2);
     }
 
-    /// Patch-side parity for `same_var_same_value_across_boundary_keeps_both`:
+    /// Attachment-side parity for `same_var_same_value_across_boundary_keeps_both`:
     /// same dest + same `host_path` on both sides → no conflict,
     /// both entries survive.
     #[test]
-    fn same_patch_same_source_across_boundary_keeps_both() {
+    fn same_attachment_same_source_across_boundary_keeps_both() {
         let mut composition = composition_with(
             vec![],
-            vec![session_patch(
+            vec![session_attachment(
                 "/usr/share/nord.toml",
                 "config/themes",
                 Source::Package {
@@ -2359,10 +2388,10 @@ mod extend_from_wire {
         );
         let wire = wire_with(
             vec![],
-            vec![wire_patch("/usr/share/nord.toml", "config/themes")],
+            vec![wire_attachment("/usr/share/nord.toml", "config/themes")],
         );
         composition.extend_from_wire(wire).unwrap();
-        assert_eq!(composition.patches.len(), 2);
+        assert_eq!(composition.attachments.len(), 2);
     }
 
     /// A `WireContribution` carrying two vars with the same name
@@ -2409,7 +2438,7 @@ mod extend_from_wire {
         // land — none of them should appear after the failed call.
         let wire = WireContribution {
             vars: vec![wire_var("EDITOR", "vim")],
-            patches: vec![],
+            attachments: vec![],
             requested_packages: vec![WirePackageRef {
                 name: "ripgrep".into(),
                 source: dev_loadout(),
@@ -2432,11 +2461,11 @@ mod extend_from_wire {
         assert_eq!(composition, snapshot);
     }
 
-    /// Patch dest collision across the boundary → `Conflict::PatchSourceMismatch`.
-    /// Var check passes but patch check fails — vars must NOT have
+    /// Attachment dest collision across the boundary → `Conflict::AttachmentSourceMismatch`.
+    /// Var check passes but attachment check fails — vars must NOT have
     /// been pre-extended.
     #[test]
-    fn patch_source_mismatch_after_var_check_passes_still_atomic() {
+    fn attachment_source_mismatch_after_var_check_passes_still_atomic() {
         let mut composition = composition_with(
             vec![session_var(
                 "EDITOR",
@@ -2445,7 +2474,7 @@ mod extend_from_wire {
                     name: "helix".into(),
                 },
             )],
-            vec![session_patch(
+            vec![session_attachment(
                 "/usr/share/nord.toml",
                 "config/themes",
                 Source::Package {
@@ -2457,15 +2486,15 @@ mod extend_from_wire {
         let wire = wire_with(
             // Distinct name → var check passes.
             vec![wire_var("LANG", "C")],
-            // Same dest, different host_path → patch check fails.
-            vec![wire_patch("/home/u/nord.toml", "config/themes")],
+            // Same dest, different host_path → attachment check fails.
+            vec![wire_attachment("/home/u/nord.toml", "config/themes")],
         );
         let err = composition.extend_from_wire(wire).unwrap_err();
         assert!(
             matches!(
                 err,
                 ComposeError::Conflict {
-                    source: Conflict::PatchSourceMismatch { .. }
+                    source: Conflict::AttachmentSourceMismatch { .. }
                 }
             ),
             "got: {err:?}",
@@ -2480,7 +2509,7 @@ mod extend_from_wire {
     fn packages_dedupe_across_boundary() {
         let mut composition = Composition {
             vars: vec![],
-            patches: vec![],
+            attachments: vec![],
             packages: vec![ProvenancedPackage::new(
                 "helix",
                 Source::Package {
@@ -2492,7 +2521,7 @@ mod extend_from_wire {
         };
         let wire = WireContribution {
             vars: vec![],
-            patches: vec![],
+            attachments: vec![],
             requested_packages: vec![
                 WirePackageRef {
                     name: "helix".into(),

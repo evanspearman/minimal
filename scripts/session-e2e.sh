@@ -102,7 +102,7 @@
 #                                    own_ip task run gets the deny-all
 #                                    default, and one whose entry allows a
 #                                    name reaches it and not another
-#   hooks                            lifecycle hooks, loadouts, patches, shells
+#   hooks                            lifecycle hooks, loadouts, attachments, shells
 #   skip_scaffold                    the daemon-scaffolded blueprint upload lane
 #   sandbox                          interactive attach: in-sandbox `min add`
 #   restart                          daemon stop → autospawn, hooks survive
@@ -493,7 +493,7 @@ TASK_SEED_DIR="" # seeded by the `min task run` proof below; removed on teardown
 TN_SEED_DIR="" # seeded by the task-network proof below; removed on teardown
 TN_LISTENER_PID="" # the task-network proof's host-side http.server; killed on teardown
 HOOK_SEED_DIR="" # seeded by the lifecycle-hooks proof below; removed on teardown
-PATCH_SRC_DIR="" # patch sources for the patch-modes proof; removed on teardown
+ATTACHMENT_SRC_DIR="" # attachment sources for the attachment-modes proof; removed on teardown
 SKIP_SEED_DIR="" # seeded by the skip-lane scaffold proof below; removed on teardown
 OWNIP_SEED_DIR="" # seeded by the own-IP proof below; removed on teardown
 NATIVE_SEED_DIR="" # seeded by the native-resolution proof below; removed on teardown
@@ -1200,7 +1200,7 @@ teardown() {
     TN_LISTENER_PID=""
   fi
   [ -n "$HOOK_SEED_DIR" ] && rm -rf "$HOOK_SEED_DIR"
-  [ -n "$PATCH_SRC_DIR" ] && rm -rf "$PATCH_SRC_DIR"
+  [ -n "$ATTACHMENT_SRC_DIR" ] && rm -rf "$ATTACHMENT_SRC_DIR"
   [ -n "$SKIP_SEED_DIR" ] && rm -rf "$SKIP_SEED_DIR"
   [ -n "$OWNIP_SEED_DIR" ] && rm -rf "$OWNIP_SEED_DIR"
   [ -n "$NATIVE_SEED_DIR" ] && rm -rf "$NATIVE_SEED_DIR"
@@ -7886,24 +7886,24 @@ LOADOUT
   # -- Directory-layout loadout ----------------------------------------------
   # The same loadout, filed as `<name>/loadout.toml` instead of `<name>.toml`
   # so it can be kept under version control. The proof is deliberately an
-  # EXTERNAL hook script plus a patch, because both anchor at
+  # EXTERNAL hook script plus an attachment, because both anchor at
   # `<loadouts>/<name>/` — which under this layout is the directory holding
   # `loadout.toml` itself. If discovery and anchoring ever disagreed about
   # which directory a loadout owns, the script would fail to stage and the
-  # patch would resolve to nothing; neither can pass by accident.
+  # attachment would resolve to nothing; neither can pass by accident.
   echo "::group::loadout layouts: <name>/loadout.toml"
   mkdir -p "$XDG_CONFIG_HOME/minimal/loadouts/vcdev"
   cat > "$XDG_CONFIG_HOME/minimal/loadouts/vcdev/loadout.toml" <<'LOADOUT'
 description = "e2e directory-layout loadout"
 
-patches = [
+attachments = [
   { dest = ".config/vcdev.conf", source = "$LOADOUT_ROOT/vcdev.conf" },
 ]
 
 [[lifecycle_hooks]]
 on_activate = { type = "external", value = "activate.sh" }
 LOADOUT
-  printf 'VCDEV_PATCH_OK\n' > "$XDG_CONFIG_HOME/minimal/loadouts/vcdev/vcdev.conf"
+  printf 'VCDEV_ATTACHMENT_OK\n' > "$XDG_CONFIG_HOME/minimal/loadouts/vcdev/vcdev.conf"
   # `/usr/bin/bash` for the same reason the external-hook fixture above uses
   # it: it is the interpreter the session is known to have.
   printf '#!/usr/bin/bash\necho HOOK_VCDEV_OK > /home/hook-vcdev\n' \
@@ -7924,49 +7924,49 @@ LOADOUT
     echo "--- activate stderr ---"; cat "$WORK/loadout-vcdev.err" 2>/dev/null || true
     fail
   fi
-  vc_patch="$(mnl session exec "$vc_sid" 'cat ~/.config/vcdev.conf' 2>/dev/null)"
-  if [[ "$vc_patch" != *VCDEV_PATCH_OK* ]]; then
-    echo "::error::\$LOADOUT_ROOT patch from a directory-layout loadout did not land (got: '$vc_patch')"
+  vc_attachment="$(mnl session exec "$vc_sid" 'cat ~/.config/vcdev.conf' 2>/dev/null)"
+  if [[ "$vc_attachment" != *VCDEV_ATTACHMENT_OK* ]]; then
+    echo "::error::\$LOADOUT_ROOT attachment from a directory-layout loadout did not land (got: '$vc_attachment')"
     echo "--- activate stderr ---"; cat "$WORK/loadout-vcdev.err" 2>/dev/null || true
     fail
   fi
   mnl session destroy --force "$vc_sid" >/dev/null 2>&1 || true
   rm -rf "$HOOK_SEED_DIR"; HOOK_SEED_DIR=""
   rm -rf "$XDG_CONFIG_HOME/minimal/loadouts/vcdev"
-  echo "directory-layout loadout proof OK (discovered, \$LOADOUT_ROOT patch + external hook resolved)"
+  echo "directory-layout loadout proof OK (discovered, \$LOADOUT_ROOT attachment + external hook resolved)"
   echo "::endgroup::"
 
-  # -- Patch file modes ------------------------------------------------------
-  # A patch's permission bits cross three hops, and each has unit coverage of
+  # -- Attachment file modes ------------------------------------------------------
+  # An attachment's permission bits cross three hops, and each has unit coverage of
   # its own end only: the client stamps the source's mode on the tar header,
-  # the daemon applies it when unpacking into `<workspace>/patches/`, and the
+  # the daemon applies it when unpacking into `<workspace>/attachments/`, and the
   # copy into the session home carries it the rest of the way. A bit dropped
-  # anywhere in there makes a patched script silently unrunnable, which is
+  # anywhere in there makes a copied script silently unrunnable, which is
   # only observable from inside a real session — so it is asserted by RUNNING
-  # the patched script, not just by reading its mode back.
-  echo "::group::patch file modes"
-  PATCH_SRC_DIR="$(hook_mktemp /tmp/mnlpm.XXXXXX)"
+  # the copied script, not just by reading its mode back.
+  echo "::group::attachment file modes"
+  ATTACHMENT_SRC_DIR="$(hook_mktemp /tmp/mnlpm.XXXXXX)"
   # `/usr/bin/bash`, like the external-hook fixture above: it is the
   # interpreter every lane's session is known to have.
-  printf '#!/usr/bin/bash\necho PATCHED_TOOL_OK\n' > "$PATCH_SRC_DIR/tool.sh"
-  chmod 755 "$PATCH_SRC_DIR/tool.sh"
-  printf 'token = "hunter2"\n' > "$PATCH_SRC_DIR/secret.toml"
-  chmod 600 "$PATCH_SRC_DIR/secret.toml"
+  printf '#!/usr/bin/bash\necho PATCHED_TOOL_OK\n' > "$ATTACHMENT_SRC_DIR/tool.sh"
+  chmod 755 "$ATTACHMENT_SRC_DIR/tool.sh"
+  printf 'token = "hunter2"\n' > "$ATTACHMENT_SRC_DIR/secret.toml"
+  chmod 600 "$ATTACHMENT_SRC_DIR/secret.toml"
   mkdir -p "$XDG_CONFIG_HOME/minimal/loadouts"
   {
-    printf 'description = "e2e patch modes"\n\n'
-    printf 'patches = [\n'
-    printf '  { dest = "bin/tool.sh", source = "%s/tool.sh" },\n' "$PATCH_SRC_DIR"
-    printf '  { dest = "secret.toml", source = "%s/secret.toml" },\n' "$PATCH_SRC_DIR"
+    printf 'description = "e2e attachment modes"\n\n'
+    printf 'attachments = [\n'
+    printf '  { dest = "bin/tool.sh", source = "%s/tool.sh" },\n' "$ATTACHMENT_SRC_DIR"
+    printf '  { dest = "secret.toml", source = "%s/secret.toml" },\n' "$ATTACHMENT_SRC_DIR"
     printf ']\n'
-  } > "$XDG_CONFIG_HOME/minimal/loadouts/patchmode.toml"
+  } > "$XDG_CONFIG_HOME/minimal/loadouts/attachmentmode.toml"
   HOOK_SEED_DIR="$(hook_mktemp /tmp/mnlpp.XXXXXX)"
   hook_seed_preamble > "$HOOK_SEED_DIR/minimal.toml"
   mkdir "$HOOK_SEED_DIR/.git"
 
-  pm_sid="$(cd "$HOOK_SEED_DIR" && mnl session activate . --no-prompt --loadout patchmode 2>"$WORK/patch-modes.err")" || {
-    echo "::error::activation with a patch-carrying loadout failed"
-    echo "--- stderr ---"; cat "$WORK/patch-modes.err" 2>/dev/null || true
+  pm_sid="$(cd "$HOOK_SEED_DIR" && mnl session activate . --no-prompt --loadout attachmentmode 2>"$WORK/attachment-modes.err")" || {
+    echo "::error::activation with an attachment-carrying loadout failed"
+    echo "--- stderr ---"; cat "$WORK/attachment-modes.err" 2>/dev/null || true
     fail
   }
   # `ls -l` rather than `stat -c %a`: portable across whatever the shell stack
@@ -7975,23 +7975,23 @@ LOADOUT
   pm_out="$(mnl session exec "$pm_sid" \
     'ls -l /home/bin/tool.sh /home/secret.toml; /home/bin/tool.sh' 2>/dev/null)"
   if [[ "$pm_out" != *"-rwxr-xr-x"* ]]; then
-    echo "::error::patched script lost its 0755 mode: '$pm_out'"
-    echo "--- activate stderr ---"; cat "$WORK/patch-modes.err" 2>/dev/null || true
+    echo "::error::copied script lost its 0755 mode: '$pm_out'"
+    echo "--- activate stderr ---"; cat "$WORK/attachment-modes.err" 2>/dev/null || true
     fail
   fi
   if [[ "$pm_out" != *"-rw-------"* ]]; then
-    echo "::error::patched secret did not keep its 0600 mode: '$pm_out'"
+    echo "::error::copied secret did not keep its 0600 mode: '$pm_out'"
     fail
   fi
   if [[ "$pm_out" != *PATCHED_TOOL_OK* ]]; then
-    echo "::error::patched script was not runnable in the session: '$pm_out'"
+    echo "::error::copied script was not runnable in the session: '$pm_out'"
     fail
   fi
   mnl session destroy --force "$pm_sid" >/dev/null 2>&1 || true
   rm -rf "$HOOK_SEED_DIR"; HOOK_SEED_DIR=""
-  rm -rf "$PATCH_SRC_DIR"; PATCH_SRC_DIR=""
-  rm -f "$XDG_CONFIG_HOME/minimal/loadouts/patchmode.toml"
-  echo "patch file modes proof OK (0755 runs, 0600 stays private)"
+  rm -rf "$ATTACHMENT_SRC_DIR"; ATTACHMENT_SRC_DIR=""
+  rm -f "$XDG_CONFIG_HOME/minimal/loadouts/attachmentmode.toml"
+  echo "attachment file modes proof OK (0755 runs, 0600 stays private)"
   echo "::endgroup::"
 
   # -- The session shell -----------------------------------------------------
@@ -8084,29 +8084,31 @@ exit' python3 "$ROOT/scripts/e2e-attach-pty.py" - \
   echo "shell fallback proof OK (bash started, notice names the package)"
   echo "::endgroup::"
 
-  # -- A patched-in .bashrc --------------------------------------------------
+  # -- A copied-in .bashrc --------------------------------------------------
   # The session bash is started `--noprofile --rcfile <daemon rc>`, so it finds
   # no startup file by itself: the daemon's rc is what sources the user's.
   # Only an interactive attach can show that — `min session exec` runs
   # `bash -c` through nsenter and reads no rc at all — and only a real session
   # proves the whole hop, since the unit tests run that rc against a temp dir
-  # rather than against a patched session home.
+  # rather than against a populated session home.
   #
   # The second half of the marker is the ORDER: `__minimal_attach_env` is the
   # daemon's `TERM`-refresh hook, defined earlier in the same rc, so a
   # `.bashrc` that can see it is one that ran after the hook went in.
-  echo "::group::session bash sources a patched .bashrc"
-  PATCH_SRC_DIR="$(hook_mktemp /tmp/mnlrc.XXXXXX)"
-  cat > "$PATCH_SRC_DIR/bashrc" <<'BASHRC'
+  echo "::group::session bash sources a copied-in .bashrc"
+  ATTACHMENT_SRC_DIR="$(hook_mktemp /tmp/mnlrc.XXXXXX)"
+  cat > "$ATTACHMENT_SRC_DIR/bashrc" <<'BASHRC'
 __e2e_hook_seen=no
 declare -F __minimal_attach_env >/dev/null && __e2e_hook_seen=yes
 export E2E_BASHRC_RAN=yes
 BASHRC
   mkdir -p "$XDG_CONFIG_HOME/minimal/loadouts"
   {
-    printf 'description = "e2e patched bashrc"\n\n'
+    # This loadout keeps the old key `patches`, the proof that a loadout
+    # written before the rename still lands its files.
+    printf 'description = "e2e copied-in bashrc"\n\n'
     printf 'patches = [\n'
-    printf '  { dest = ".bashrc", source = "%s/bashrc" },\n' "$PATCH_SRC_DIR"
+    printf '  { dest = ".bashrc", source = "%s/bashrc" },\n' "$ATTACHMENT_SRC_DIR"
     printf ']\n'
   } > "$XDG_CONFIG_HOME/minimal/loadouts/bashrcdev.toml"
   HOOK_SEED_DIR="$(hook_mktemp /tmp/mnlrr.XXXXXX)"
@@ -8114,7 +8116,7 @@ BASHRC
   mkdir "$HOOK_SEED_DIR/.git"
 
   rc_sid="$(cd "$HOOK_SEED_DIR" && mnl session activate . --no-prompt --loadout bashrcdev 2>"$WORK/bashrc.err")" || {
-    echo "::error::activation with a .bashrc-patching loadout failed"
+    echo "::error::activation with a .bashrc-copying loadout failed"
     echo "--- stderr ---"; cat "$WORK/bashrc.err" 2>/dev/null || true
     fail
   }
@@ -8124,24 +8126,24 @@ BASHRC
 exit' python3 "$ROOT/scripts/e2e-attach-pty.py" - \
     min ${E2E_MINIMAL_ARGS:-} session attach "$rc_sid" \
     2>"$WORK/bashrc-attach.err")" || {
-    echo "::error::pty attach for the patched-.bashrc proof failed"
+    echo "::error::pty attach for the copied-in-.bashrc proof failed"
     echo "--- transcript ---"; printf '%s\n' "$rc_out"
     echo "--- stderr ---"; cat "$WORK/bashrc-attach.err" 2>/dev/null || true
     fail
   }
   if [[ "$rc_out" != *"BASHRC_MARK[yes/yes]"* ]]; then
-    echo "::error::the patched ~/.bashrc did not run after the attach-env hook"
+    echo "::error::the copied-in ~/.bashrc did not run after the attach-env hook"
     echo "--- transcript ---"; printf '%s\n' "$rc_out"
     fail
   fi
   # The same end with the shell, and the same destroy, as the shell proofs
   # above.
-  assert_box_exited "$rc_sid" 0 "patched .bashrc"
-  destroy_box_and_assert_gone "$rc_sid" "$rc_sid" "patched .bashrc"
+  assert_box_exited "$rc_sid" 0 "copied-in .bashrc"
+  destroy_box_and_assert_gone "$rc_sid" "$rc_sid" "copied-in .bashrc"
   rm -rf "$HOOK_SEED_DIR"; HOOK_SEED_DIR=""
-  rm -rf "$PATCH_SRC_DIR"; PATCH_SRC_DIR=""
+  rm -rf "$ATTACHMENT_SRC_DIR"; ATTACHMENT_SRC_DIR=""
   rm -f "$XDG_CONFIG_HOME/minimal/loadouts/bashrcdev.toml"
-  echo "patched .bashrc proof OK (sourced, and after the daemon's hook)"
+  echo "copied-in .bashrc proof OK (sourced, and after the daemon's hook)"
   echo "::endgroup::"
 fi
 }

@@ -565,7 +565,7 @@ impl fmt::Display for SessionCandidate {
 /// in the picker. `Active` sessions are ready to attach; `Pending` and
 /// `Materializing` ones aren't attachable yet — `Pending` is still awaiting
 /// the client's verdict, `Materializing` has finalized its composition but
-/// is still ingesting patches. Both render with the hollow glyph so the
+/// is still ingesting attachments. Both render with the hollow glyph so the
 /// picker communicates "not-yet-ready" uniformly. A `Stopped` or `Exited`
 /// box is not attachable either, so it renders hollow too.
 fn state_glyph(status: boxes::BoxState) -> &'static str {

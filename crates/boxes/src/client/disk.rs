@@ -10,7 +10,7 @@
 //! | [`Directory`](Layout::Directory) | `<loadouts>/<name>/loadout.toml` | a loadout kept under version control |
 //!
 //! The two are equivalent in every way but where the bytes sit. A
-//! loadout's own directory — the anchor for its `$LOADOUT_ROOT` patch
+//! loadout's own directory — the anchor for its `$LOADOUT_ROOT` attachment
 //! sources and its external hook scripts — is `<loadouts>/<name>/`
 //! under both, because [`Source::loadout_dir`] derives it from the
 //! *name* rather than from the file's path. So `mkdir dev && mv
@@ -386,7 +386,7 @@ impl<'a> DeclaredName<'a> {
 ///
 /// Everything else is silently ignored — in particular a subdirectory
 /// with no `loadout.toml`, which is the asset directory a flat
-/// `<name>.toml` anchors its `$LOADOUT_ROOT` patches and hook scripts
+/// `<name>.toml` anchors its `$LOADOUT_ROOT` attachments and hook scripts
 /// at.
 ///
 /// # Errors
@@ -634,7 +634,7 @@ mod tests {
             "patches = [{ dest = \"a\", source = \"~/a\" }]\n",
         );
         let loadout = read_loadout_file(&path).expect("the old key still reads");
-        assert_eq!(loadout.patches().len(), 1);
+        assert_eq!(loadout.attachments().len(), 1);
     }
 
     /// A loadout that sets both `attachments` and `patches` is refused
@@ -839,7 +839,7 @@ mod tests {
 
     /// A bare `<name>/` with no `loadout.toml` is not a loadout: that
     /// is the asset directory a flat `<name>.toml` anchors its
-    /// `$LOADOUT_ROOT` patches and hook scripts at, and it must keep
+    /// `$LOADOUT_ROOT` attachments and hook scripts at, and it must keep
     /// resolving to the flat file beside it.
     #[test]
     fn an_asset_directory_beside_a_flat_loadout_is_not_a_conflict() {

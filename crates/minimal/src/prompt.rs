@@ -355,7 +355,7 @@ impl PolicyHooks for InteractivePrompt {
         for item in items {
             let path = item.item();
             let msg = format!(
-                "{} wants to patch `{}`",
+                "{} wants to copy an attachment to `{}`",
                 source_label(item.source()),
                 path.as_str()
             );

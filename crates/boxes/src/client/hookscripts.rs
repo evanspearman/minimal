@@ -107,7 +107,7 @@ impl ScriptAnchors {
             // component that stays put. A name it rejects has no anchor, so
             // its scripts never stage — and the daemon would refuse to read
             // them anyway. It is also what `$LOADOUT_ROOT` resolves to, so a
-            // loadout's scripts and its patch sources share one directory.
+            // loadout's scripts and its attachment sources share one directory.
             Source::UserLoadout { .. } => source.loadout_dir(&self.loadouts_dir),
             Source::Project { .. } => Some(self.project_root.clone()),
             Source::Package { .. } => None,

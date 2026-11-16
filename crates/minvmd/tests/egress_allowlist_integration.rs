@@ -698,7 +698,7 @@ const EXPECTED_PENDING_VAR: &str = "NPM_CONFIG_CACHE";
 /// Client-side policy gate for the pending items the daemon routes back. It
 /// approves exactly [`EXPECTED_PENDING_VAR`] and fails the test on anything
 /// else, naming the item, so a package that starts contributing another var,
-/// a patch, or a hook surfaces here instead of being waved through.
+/// an attachment, or a hook surfaces here instead of being waved through.
 struct ApproveExpectedVar;
 
 impl PolicyHooks for ApproveExpectedVar {
@@ -728,7 +728,7 @@ impl PolicyHooks for ApproveExpectedVar {
         _policy: PatchesPolicy,
         items: &[Unapproved<'_, camino::Utf8Path>],
     ) -> HookResult<PatchesPolicy> {
-        refuse_unexpected("patch", items)
+        refuse_unexpected("attachment", items)
     }
 
     fn on_hook_unapproved(
@@ -761,9 +761,9 @@ where
 
 /// Phase 3 of the compose flow (see `crates/boxes/docs/COMPOSITION.md`):
 /// gate the daemon's pending items with [`ApproveExpectedVar`] and ship the verdict
-/// with `SubmitVerdict`. Package patches whose source does not exist on this
-/// host come back `Ignored`; an `Approved` patch would need the
-/// `WorkspacePatchesTarZst` upload the CLI performs, which this harness does
+/// with `SubmitVerdict`. Package attachments whose source does not exist on this
+/// host come back `Ignored`; an `Approved` attachment would need the
+/// `WorkspaceAttachmentsTarZst` upload the CLI performs, which this harness does
 /// not, so it is reported rather than left to fail at `FinalizeSession`.
 async fn submit_gated_verdict(
     handle: &mut russh::client::Handle<ClientHandler>,
@@ -775,9 +775,9 @@ async fn submit_gated_verdict(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     eprintln!(
-        "egress_allowlist_integration: ConfigureLoadout pending: {} vars, {} patches, {} hooks",
+        "egress_allowlist_integration: ConfigureLoadout pending: {} vars, {} attachments, {} hooks",
         response.vars.len(),
-        response.patches.len(),
+        response.attachments.len(),
         response.lifecycle_hooks.len(),
     );
     let (verdict, _policy) = boxes::client::handler::handle_response(
@@ -789,18 +789,18 @@ async fn submit_gated_verdict(
         &|name| std::env::var(name),
     )
     .map_err(|e| format!("gating pending items: {e}"))?;
-    let approved_patches: Vec<String> = verdict
-        .patches
+    let approved_attachments: Vec<String> = verdict
+        .attachments
         .iter()
         .filter_map(|p| match p {
             WirePatchVerdict::Approved { host_path, .. } => Some(host_path.as_str().to_owned()),
             _ => None,
         })
         .collect();
-    if !approved_patches.is_empty() {
+    if !approved_attachments.is_empty() {
         return Err(format!(
-            "pending patches resolved to host files this harness cannot upload: \
-             {approved_patches:?}"
+            "pending attachments resolved to host files this harness cannot upload: \
+             {approved_attachments:?}"
         ));
     }
 

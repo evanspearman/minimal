@@ -832,8 +832,8 @@ async fn open_box(
 
 /// Client-side gate for the pending items `ConfigureLoadout` routes back,
 /// answering the way the CLI's `--no-prompt` hook does for vars (allow once)
-/// and failing the test, naming the items, on any patch or hook: a box here
-/// declares none, and this harness cannot upload a patch's host file.
+/// and failing the test, naming the items, on any attachment or hook: a box here
+/// declares none, and this harness cannot upload an attachment's host file.
 struct NoPromptVars;
 
 impl PolicyHooks for NoPromptVars {
@@ -850,7 +850,7 @@ impl PolicyHooks for NoPromptVars {
         _policy: PatchesPolicy,
         items: &[Unapproved<'_, camino::Utf8Path>],
     ) -> HookResult<PatchesPolicy> {
-        refuse_unexpected("patch", items)
+        refuse_unexpected("attachment", items)
     }
 
     fn on_hook_unapproved(
@@ -889,9 +889,9 @@ async fn submit_verdict(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     eprintln!(
-        "guest_classifier_integration: ConfigureLoadout pending: {} vars, {} patches, {} hooks",
+        "guest_classifier_integration: ConfigureLoadout pending: {} vars, {} attachments, {} hooks",
         response.vars.len(),
-        response.patches.len(),
+        response.attachments.len(),
         response.lifecycle_hooks.len(),
     );
     let (verdict, _policy) = boxes::client::handler::handle_response(

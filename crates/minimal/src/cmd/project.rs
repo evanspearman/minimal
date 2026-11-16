@@ -33,7 +33,7 @@ pub(crate) fn sync_none_drops_project_config(dir: &camino::Utf8Path) -> bool {
 pub(crate) fn sync_none_notice(dir: &camino::Utf8Path) -> Option<&'static str> {
     sync_none_drops_project_config(dir).then_some(
         "--sync none: this project's minimal.toml is not sent; the session uses a default \
-         project configuration (its packages, vars, patches and hooks are not applied)",
+         project configuration (its packages, vars, attachments and hooks are not applied)",
     )
 }
 

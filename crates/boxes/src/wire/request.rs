@@ -12,12 +12,12 @@
 use super::errors::WireError;
 use super::policy::{WireHookVerdict, WirePatchVerdict, WireVarVerdict};
 use super::primitives::{
-    WireOrientation, WirePackageRef, WirePendingHook, WirePendingPatch, WirePendingVar,
-    WireProvenancedHook, WireSessionPatch, WireSessionVar,
+    WireOrientation, WirePackageRef, WirePendingAttachment, WirePendingHook, WirePendingVar,
+    WireProvenancedHook, WireSessionAttachment, WireSessionVar,
 };
 use crate::SessionId;
 use crate::core::lifecyclehook::LifecycleHook;
-use crate::core::primitives::{LenientVarEntry, Patches, StrictVarName, VarValue};
+use crate::core::primitives::{Attachments, LenientVarEntry, StrictVarName, VarValue};
 use std::collections::BTreeMap;
 
 /// Snapshot format version for [`WireComposition`]. Bumped when the
@@ -35,14 +35,17 @@ pub const COMPOSITION_SNAPSHOT_VERSION: u32 = 2;
 const LEGACY_COMPOSITION_SNAPSHOT_VERSION: u32 = 1;
 
 /// The client's composed contribution, wire-shaped: var values
-/// resolved, patch sources expanded to concrete files, every item
+/// resolved, attachment sources expanded to concrete files, every item
 /// already gated by the user policy.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WireContribution {
     /// Variables that passed the user policy gate.
     pub vars: Vec<WireSessionVar>,
-    /// Patch files that passed the user policy gate.
-    pub patches: Vec<WireSessionPatch>,
+    /// Attachment files that passed the user policy gate.
+    /// Read under its old name `patches` too, from a client or daemon of
+    /// an earlier release.
+    #[serde(alias = "patches")]
+    pub attachments: Vec<WireSessionAttachment>,
     /// Lifecycle hooks (no policy applies).
     pub lifecycle_hooks: Vec<WireProvenancedHook>,
     /// Packages the client requested be brought in.
@@ -61,7 +64,7 @@ pub struct WireContribution {
     /// composes from the project's `[session]` table alone.
     ///
     /// Gap: the entry carries only the five composed lists (`packages`,
-    /// `vars`, `vars_lenient`, `patches`, `lifecycle_hooks`), not the
+    /// `vars`, `vars_lenient`, `attachments`, `lifecycle_hooks`), not the
     /// whole expanded Box Spec. The daemon still reads the project's
     /// `[stack]` itself. Sending and storing the full expanded spec, as
     /// BOX-068 asks, is tracked in gominimal/minimal#3257.
@@ -73,7 +76,7 @@ pub struct WireContribution {
 /// contribution: the lists of the expanded spec that the daemon composes.
 ///
 /// This is not the expanded Box Spec. It carries only five lists
-/// (`packages`, `vars`, `vars_lenient`, `patches`, `lifecycle_hooks`), and
+/// (`packages`, `vars`, `vars_lenient`, `attachments`, `lifecycle_hooks`), and
 /// the daemon still reads the project's `[stack]` itself. Sending and
 /// storing the full expanded spec (BOX-068) is tracked in
 /// gominimal/minimal#3257.
@@ -101,9 +104,9 @@ pub struct WireBoxEntry {
     /// `vars_lenient`, in expansion order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vars_lenient: Option<Vec<LenientVarEntry>>,
-    /// `patches`, in expansion order.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub patches: Option<Patches>,
+    /// `attachments`, in expansion order.
+    #[serde(default, alias = "patches", skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Attachments>,
     /// `lifecycle_hooks`, in expansion order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_hooks: Option<Vec<LifecycleHook>>,
@@ -124,7 +127,7 @@ impl WireBoxEntry {
             packages: None,
             vars: None,
             vars_lenient: None,
-            patches: None,
+            attachments: None,
             lifecycle_hooks: None,
         }
     }
@@ -150,8 +153,11 @@ pub struct WireComposition {
     pub version: u32,
     /// Variables that survived the policy gate.
     pub vars: Vec<WireSessionVar>,
-    /// Patches that survived the policy gate.
-    pub patches: Vec<WireSessionPatch>,
+    /// Attachments that survived the policy gate.
+    /// Read under its old name `patches` too: a box's `composition.json`
+    /// written by an earlier release still loads.
+    #[serde(alias = "patches")]
+    pub attachments: Vec<WireSessionAttachment>,
     /// Packages contributed to the session (pass-through; no gate).
     pub packages: Vec<WirePackageRef>,
     /// Lifecycle hooks contributed to the session (pass-through; no
@@ -173,7 +179,7 @@ impl From<&crate::core::compose::Composition> for WireComposition {
         Self {
             version: COMPOSITION_SNAPSHOT_VERSION,
             vars: c.vars().iter().cloned().map(Into::into).collect(),
-            patches: c.patches().iter().cloned().map(Into::into).collect(),
+            attachments: c.attachments().iter().cloned().map(Into::into).collect(),
             packages: c.packages().iter().cloned().map(Into::into).collect(),
             lifecycle_hooks: c
                 .lifecycle_hooks()
@@ -197,8 +203,9 @@ pub struct ContributionResponse {
     pub session_id: SessionId,
     /// Pending variables awaiting policy + prompt.
     pub vars: Vec<WirePendingVar>,
-    /// Pending patches awaiting policy + prompt.
-    pub patches: Vec<WirePendingPatch>,
+    /// Pending attachments awaiting policy + prompt.
+    #[serde(alias = "patches")]
+    pub attachments: Vec<WirePendingAttachment>,
     /// Lifecycle hooks awaiting the hooks-policy gate. Project-declared
     /// hooks only — a loadout's are the user's own and never reach the
     /// daemon-side pending set.
@@ -213,8 +220,9 @@ pub struct ContributionVerdict {
     pub session_id: SessionId,
     /// One verdict per pending var.
     pub vars: Vec<WireVarVerdict>,
-    /// One verdict per pending patch.
-    pub patches: Vec<WirePatchVerdict>,
+    /// One verdict per pending attachment.
+    #[serde(alias = "patches")]
+    pub attachments: Vec<WirePatchVerdict>,
     /// One verdict per pending lifecycle hook. Serde-defaulted so a
     /// verdict from a client that predates the hooks gate deserializes;
     /// the daemon treats a hook with no verdict as refused, so an old
@@ -229,8 +237,8 @@ pub struct ContributionVerdict {
 /// `Active`) or a protocol-level fault the transport layer didn't
 /// catch.
 ///
-/// The client follows up with a patches upload
-/// (`WorkspacePatchesTarZst`) and then `FinalizeSession` to
+/// The client follows up with a attachments upload
+/// (`WorkspaceAttachmentsTarZst`) and then `FinalizeSession` to
 /// actually promote the record to
 /// [`Active`](crate::BoxState::Active). Only after that step
 /// is the session attachable.
@@ -239,7 +247,7 @@ pub struct ContributionVerdict {
 pub enum BoxStep {
     /// Composition complete; the session record has been promoted to
     /// [`Materializing`](crate::BoxState::Materializing). The
-    /// client must upload the composition's patches and call
+    /// client must upload the composition's attachments and call
     /// `FinalizeSession` before the session is attachable.
     Materialized {
         /// Daemon-assigned session id. Matches the id returned by
@@ -292,7 +300,7 @@ mod tests {
                 },
                 carries_user_data: true,
             }],
-            patches: vec![],
+            attachments: vec![],
             lifecycle_hooks: vec![],
         };
         assert_eq!(round_trip(&r), r);
@@ -310,7 +318,7 @@ mod tests {
                     carries_user_data: true,
                 },
             }],
-            patches: vec![WirePatchVerdict::Denied {
+            attachments: vec![WirePatchVerdict::Denied {
                 id: PendingId::new(2),
                 host_path: paths::HostAbsPath::try_new("/etc/secret").unwrap(),
             }],
@@ -328,7 +336,7 @@ mod tests {
     #[test]
     fn contribution_verdict_without_hook_field_deserializes_empty() {
         let json = format!(
-            r#"{{"session_id":"{}","vars":[],"patches":[]}}"#,
+            r#"{{"session_id":"{}","vars":[],"attachments":[]}}"#,
             session_id()
         );
         let v: ContributionVerdict =
@@ -374,7 +382,7 @@ mod tests {
                 },
                 source: WireSource::UserLoadout { name: "dev".into() },
             }],
-            patches: vec![],
+            attachments: vec![],
             packages: vec![super::WirePackageRef {
                 name: "helix".into(),
                 source: WireSource::UserLoadout { name: "dev".into() },
@@ -422,6 +430,30 @@ mod tests {
         assert!(hook.description.is_none());
     }
 
+    /// A sidecar written before the rename, with `patches` and each row's
+    /// `patch`, loads its attachments, and writes them back under the new
+    /// names.
+    #[test]
+    fn snapshot_with_old_attachment_names_still_loads() {
+        let json = r#"{
+            "version": 2,
+            "vars": [], "packages": [], "lifecycle_hooks": [],
+            "patches": [{
+                "patch": {"host_path": "/home/u/.vimrc", "destination": ".vimrc"},
+                "source": {"kind": "user_loadout", "name": "dev"}
+            }]
+        }"#;
+        let c: WireComposition =
+            serde_json_lenient::from_str(json).expect("an old snapshot must still load");
+        assert_eq!(c.attachments.len(), 1);
+        let written = serde_json_lenient::to_string(&c).unwrap();
+        assert!(
+            written.contains(r#""attachments":[{"attachment":"#),
+            "{written}"
+        );
+        assert!(!written.contains("patch"), "{written}");
+    }
+
     /// The writer stamps the current version, so a freshly written
     /// snapshot is distinguishable on read from a legacy one that
     /// omitted the field entirely.
@@ -459,7 +491,7 @@ mod tests {
     fn contribution_orientation_round_trips() {
         let c = WireContribution {
             vars: vec![],
-            patches: vec![],
+            attachments: vec![],
             lifecycle_hooks: vec![],
             requested_packages: vec![],
             orientation: WireOrientation {
@@ -492,7 +524,7 @@ mod tests {
         assert_eq!(back.lifecycle_hooks, Some(Vec::new()));
 
         // A contribution from a client that sends no entry still reads.
-        let json = r#"{"vars":[],"patches":[],"lifecycle_hooks":[],"requested_packages":[]}"#;
+        let json = r#"{"vars":[],"attachments":[],"lifecycle_hooks":[],"requested_packages":[]}"#;
         let c: WireContribution = serde_json_lenient::from_str(json).unwrap();
         assert_eq!(c.entry, None);
     }

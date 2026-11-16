@@ -59,10 +59,10 @@
 # `min session activate --no-hooks` skips the question and the
 # hooks entirely, for the run where you just want the box.
 #
-# `claude-code` also contributes a patch source that resolves to
+# `claude-code` also contributes an attachment source that resolves to
 # `~/.claude`. If you don't have that directory the client emits a
 # synthetic `Ignored` verdict so the daemon doesn't reject the
-# whole activation with "verdict missing entry for pending patch".
+# whole activation with "verdict missing entry for pending attachment".
 
 [upstream]
 repo = "https://github.com/gominimal/pkgs"

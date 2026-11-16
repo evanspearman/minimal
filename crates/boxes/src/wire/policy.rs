@@ -2,7 +2,7 @@
 //!
 //! Sent from the client to the daemon in response to the daemon's
 //! batch of pending items ([`super::primitives::WirePendingVar`] /
-//! [`super::primitives::WirePendingPatch`]). Each verdict carries the
+//! [`super::primitives::WirePendingAttachment`]). Each verdict carries the
 //! [`PendingId`] from the corresponding pending item so the daemon
 //! can correlate without relying on slice ordering.
 
@@ -39,15 +39,15 @@ pub enum WireVarVerdict {
 }
 
 /// The client's decision about a single file matched by a pending
-/// patch's source pattern.
+/// attachment's source pattern.
 ///
-/// One [`WirePendingPatch`](super::primitives::WirePendingPatch) can
+/// One [`WirePendingAttachment`](super::primitives::WirePendingAttachment) can
 /// fan out to multiple files (its `source_pattern` is a glob), so
 /// each is voted on independently. `id` correlates back to the
-/// pending patch; `host_path` is the canonical absolute path the
+/// pending attachment; `host_path` is the canonical absolute path the
 /// daemon will copy from.
 ///
-/// **On the destination:** the pending patch carries only the
+/// **On the destination:** the pending attachment carries only the
 /// *base* destination the daemon staged — for a dir mapping like
 /// `~/.claude/**` that's `~/.claude`, shared across every file the
 /// walk enumerates. The client is the one that computes the
@@ -55,14 +55,14 @@ pub enum WireVarVerdict {
 /// walker's path suffix under the walk root), so `Approved`
 /// carries it back on the wire; the daemon must not reuse the
 /// pending's base or every file in a dir mapping would collide on
-/// the same destination and the `check_patch_mismatches` invariant
+/// the same destination and the `check_attachment_mismatches` invariant
 /// would fire.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WirePatchVerdict {
     /// User policy or prompt approved this file.
     Approved {
-        /// Matches the corresponding `WirePendingPatch::id`.
+        /// Matches the corresponding `WirePendingAttachment::id`.
         id: PendingId,
         /// Absolute host path of the matched file.
         host_path: paths::HostAbsPath,
@@ -74,7 +74,7 @@ pub enum WirePatchVerdict {
     },
     /// User policy or prompt rejected this file.
     Denied {
-        /// Matches the corresponding `WirePendingPatch::id`.
+        /// Matches the corresponding `WirePendingAttachment::id`.
         id: PendingId,
         /// Absolute host path of the rejected file.
         host_path: paths::HostAbsPath,
@@ -83,7 +83,7 @@ pub enum WirePatchVerdict {
     /// `host_path` is carried for audit/logging parity with the
     /// other variants — the daemon must not copy the file.
     Ignored {
-        /// Matches the corresponding `WirePendingPatch::id`.
+        /// Matches the corresponding `WirePendingAttachment::id`.
         id: PendingId,
         /// Absolute host path of the dropped file. Logging only.
         host_path: paths::HostAbsPath,
@@ -92,7 +92,7 @@ pub enum WirePatchVerdict {
 
 /// The client's decision about one pending lifecycle hook.
 ///
-/// Unlike a var or patch verdict this carries no value back: the daemon
+/// Unlike a var or attachment verdict this carries no value back: the daemon
 /// already holds the hook, and the client is answering only "may this
 /// run". `Denied` aborts the activation, matching the other domains —
 /// a project-declared hook the user explicitly refused must not leave a

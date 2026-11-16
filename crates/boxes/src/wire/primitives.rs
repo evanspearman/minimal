@@ -110,10 +110,10 @@ pub enum WireVarSpec {
     },
 }
 
-/// A resolved patch: where it lives on the host and where it lands in
-/// the sandbox. Mirrors [`crate::core::primitives::ResolvedPatch`].
+/// A resolved attachment: where it lives on the host and where it lands in
+/// the sandbox. Mirrors [`crate::core::primitives::ResolvedAttachment`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct WireResolvedPatch {
+pub struct WireResolvedAttachment {
     /// Absolute host path of the source file.
     pub host_path: paths::HostAbsPath,
     /// Destination inside the sandbox, relative to the sandbox user's
@@ -131,12 +131,13 @@ pub struct WireSessionVar {
     pub source: WireSource,
 }
 
-/// A resolved patch + its origin. Mirrors
-/// [`crate::core::compose::SessionPatch`].
+/// A resolved attachment + its origin. Mirrors
+/// [`crate::core::compose::SessionAttachment`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct WireSessionPatch {
-    /// Resolved patch.
-    pub patch: WireResolvedPatch,
+pub struct WireSessionAttachment {
+    /// Resolved attachment.
+    #[serde(alias = "patch")]
+    pub attachment: WireResolvedAttachment,
     /// Where it came from.
     pub source: WireSource,
 }
@@ -298,11 +299,11 @@ pub struct WirePendingHook {
     pub source: WireSource,
 }
 
-/// Daemon → Client: a patch from a package or the project that the
+/// Daemon → Client: an attachment from a package or the project that the
 /// client will expand (against its already-gated vars) and run
 /// through user policy.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct WirePendingPatch {
+pub struct WirePendingAttachment {
     /// Correlation id; the client echoes it back on the verdict.
     pub id: PendingId,
     /// Raw, unexpanded source path expression. Client expands using
@@ -347,8 +348,8 @@ impl From<crate::core::primitives::ResolvedVar> for WireResolvedVar {
     }
 }
 
-impl From<crate::core::primitives::ResolvedPatch> for WireResolvedPatch {
-    fn from(p: crate::core::primitives::ResolvedPatch) -> Self {
+impl From<crate::core::primitives::ResolvedAttachment> for WireResolvedAttachment {
+    fn from(p: crate::core::primitives::ResolvedAttachment) -> Self {
         let (host_path, destination) = p.into_parts();
         Self {
             host_path,
@@ -367,11 +368,11 @@ impl From<crate::core::compose::SessionVar> for WireSessionVar {
     }
 }
 
-impl From<crate::core::compose::SessionPatch> for WireSessionPatch {
-    fn from(p: crate::core::compose::SessionPatch) -> Self {
-        let (patch, source) = p.into_parts();
+impl From<crate::core::compose::SessionAttachment> for WireSessionAttachment {
+    fn from(p: crate::core::compose::SessionAttachment) -> Self {
+        let (attachment, source) = p.into_parts();
         Self {
-            patch: patch.into(),
+            attachment: attachment.into(),
             source: source.into(),
         }
     }
@@ -507,8 +508,8 @@ mod tests {
     }
 
     #[test]
-    fn resolved_patch_round_trips() {
-        let p = WireResolvedPatch {
+    fn resolved_attachment_round_trips() {
+        let p = WireResolvedAttachment {
             host_path: paths::HostAbsPath::try_new("/home/u/.gitconfig").unwrap(),
             destination: paths::SandboxRelPath::try_new(".gitconfig").unwrap(),
         };
@@ -529,9 +530,9 @@ mod tests {
     }
 
     #[test]
-    fn session_patch_round_trips() {
-        let p = WireSessionPatch {
-            patch: WireResolvedPatch {
+    fn session_attachment_round_trips() {
+        let p = WireSessionAttachment {
+            attachment: WireResolvedAttachment {
                 host_path: paths::HostAbsPath::try_new("/home/u/.gitconfig").unwrap(),
                 destination: paths::SandboxRelPath::try_new(".gitconfig").unwrap(),
             },
@@ -678,8 +679,8 @@ mod tests {
     }
 
     #[test]
-    fn pending_patch_round_trips() {
-        let p = WirePendingPatch {
+    fn pending_attachment_round_trips() {
+        let p = WirePendingAttachment {
             id: PendingId::new(2),
             source_pattern: "$XDG_CONFIG_HOME/helix/**/*.toml".into(),
             destination: paths::SandboxRelPath::try_new(".config/helix/").unwrap(),
@@ -692,8 +693,8 @@ mod tests {
     }
 
     #[test]
-    fn pending_patch_omits_description_when_none() {
-        let p = WirePendingPatch {
+    fn pending_attachment_omits_description_when_none() {
+        let p = WirePendingAttachment {
             id: PendingId::new(2),
             source_pattern: "$HOME/.gitconfig".into(),
             destination: paths::SandboxRelPath::try_new(".gitconfig").unwrap(),

@@ -4605,7 +4605,7 @@ mod end_to_end {
     /// the echo short-circuit never builds a graph, so nothing here
     /// reaches the (network-bound) package machinery. A task-only mfile
     /// gates nothing, so the loadout composes in one shot, and this
-    /// composition has no patches, so `FinalizeSession` takes the
+    /// composition has no attachments, so `FinalizeSession` takes the
     /// empty-composition shortcut past the marker check and promotes
     /// the record to `Active` in one call.
     async fn active_session_with_echo_task(

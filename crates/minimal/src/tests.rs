@@ -3239,7 +3239,7 @@ fn project_has_mfile_false_when_absent() {
 /// `--sync none` drops a config only when one exists up the tree: a
 /// `minimal.toml` at the project root is detected from a nested subdir,
 /// so the notice fires for the case that would otherwise silently lose
-/// the project's packages, vars, patches and hooks.
+/// the project's packages, vars, attachments and hooks.
 #[test]
 fn sync_none_drops_project_config_true_when_mfile_up_tree() {
     let dir = tempfile::tempdir().unwrap();
@@ -3786,6 +3786,7 @@ fn daemon_refusals_print_without_rpc_names() {
                 "SubmitVerdict",
                 "FinalizeSession",
                 "RenameSession",
+                "WorkspaceAttachmentsTarZst",
                 "WorkspacePatchesTarZst",
             ] {
                 assert!(
@@ -15181,7 +15182,7 @@ async fn start_from_entry(
         .call::<SubmitVerdict>(&ContributionVerdict {
             session_id: id,
             vars: var_verdicts,
-            patches: Vec::new(),
+            attachments: Vec::new(),
             lifecycle_hooks: hook_verdicts,
         })
         .await

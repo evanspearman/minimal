@@ -7,7 +7,7 @@
 //!   upload path.
 //! - [`TarZstArchive`] is a lower-level builder taking one entry at
 //!   a time (via [`TarZstArchive::add_file`]) so callers with a
-//!   disjoint set of source paths — the composition-patches
+//!   disjoint set of source paths — the composition-attachments
 //!   uploader — can drive the same pipe/encoder plumbing without
 //!   going through a directory walk. Parent directories are
 //!   materialized by the unpacker as needed; no explicit
@@ -167,7 +167,7 @@ pub async fn stream_tar_zstd<W: AsyncWrite + Unpin + Send>(
     dir: &Path,
     writer: W,
 ) -> Result<(), anyhow::Error> {
-    // Route through `stream_via_pipe` (shared with the patches
+    // Route through `stream_via_pipe` (shared with the attachments
     // uploader): the SSH channel writer isn't Sync but the tar
     // builder requires Sync, so the build side writes into the
     // pipe's Sync tx half while the pipe's rx pumps into `writer`.
@@ -188,7 +188,7 @@ pub async fn stream_tar_zstd<W: AsyncWrite + Unpin + Send>(
 
 /// Run `build` against the Sync tx half of an in-memory pipe while
 /// draining the rx half into `writer`. Used by both directory and
-/// per-patch uploaders to bridge a non-Sync writer (SSH channel,
+/// per-attachment uploaders to bridge a non-Sync writer (SSH channel,
 /// or a test `&mut Vec<u8>`) to the Sync-requiring
 /// [`TarZstArchive`].
 ///
@@ -327,7 +327,7 @@ impl<W: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for ProgressWriter<
 pub struct AddFileOptions {
     /// Override the archive-entry mode. `None` copies the source
     /// file's mode (masked to the standard permission bits) as-is —
-    /// what both the workspace walker and the patches uploader want,
+    /// what both the workspace walker and the attachments uploader want,
     /// since flattening a mode strips the exec bit off whatever it is
     /// applied to. `Some(m)` forces `m`: the hook-script uploader
     /// stamps `0o644` because the executor runs `bash <script>`, so a
@@ -450,7 +450,7 @@ impl<W: AsyncWrite + Unpin + Send + Sync> TarZstArchive<W> {
         header.set_entry_type(async_tar::EntryType::Regular);
         // 1 MiB BufReader on the file: without it every 8 KiB chunk
         // `tokio::io::copy(_buf)` moves is a separate blocking-pool
-        // round-trip through `tokio::fs`, and 1.3 GiB of patches
+        // round-trip through `tokio::fs`, and 1.3 GiB of attachments
         // means 168k of them. With the BufReader the file's read
         // syscalls collapse to `size / 1 MiB` — a ~130× reduction
         // that closes the throughput gap between the tar builder
@@ -1810,7 +1810,7 @@ mod tests {
     }
 
     /// Adding files entry-at-a-time from arbitrary host paths (the
-    /// patches-upload shape) yields a valid archive with each entry
+    /// attachments-upload shape) yields a valid archive with each entry
     /// at the caller-supplied archive path.
     #[tokio::test]
     async fn tar_zst_archive_adds_files_at_specified_archive_paths() {
@@ -1854,7 +1854,7 @@ mod tests {
     }
 
     /// `add_file` follows symlinks — copies the target's contents.
-    /// The patches uploader relies on this so a `/nix/store/…` link
+    /// The attachments uploader relies on this so a `/nix/store/…` link
     /// lands as a real file inside the sandbox.
     #[tokio::test]
     async fn tar_zst_archive_add_file_follows_symlinks() {
@@ -1886,9 +1886,9 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&copied).unwrap(), "target-contents");
     }
 
-    /// With the default options — what the patches uploader passes —
+    /// With the default options — what the attachments uploader passes —
     /// the entry carries the source file's own permission bits. A
-    /// script patched into a session has to arrive executable, and a
+    /// script copied into a session has to arrive executable, and a
     /// `0600` source has to arrive private; both are decided here, on
     /// the header.
     #[tokio::test]
@@ -1932,7 +1932,7 @@ mod tests {
     /// the source's own. Verifies the hook-script uploader's
     /// flatten-to-0o644 story: those are read by `bash <script>`, never
     /// exec'd, so their source mode is deliberately not carried. The
-    /// patches uploader takes the `None` branch instead — see
+    /// attachments uploader takes the `None` branch instead — see
     /// [`tar_zst_archive_add_file_defaults_to_the_source_mode`].
     #[tokio::test]
     async fn tar_zst_archive_add_file_honours_mode_override() {
@@ -1969,8 +1969,8 @@ mod tests {
     }
 
     /// An archive with no entries still produces a valid empty
-    /// tar+zstd stream. The patches uploader takes this path when
-    /// the composition has no patches.
+    /// tar+zstd stream. The attachments uploader takes this path when
+    /// the composition has no attachments.
     #[tokio::test]
     async fn tar_zst_archive_empty_finish_produces_valid_stream() {
         let buf = build_via_archive(async |_| Ok(())).await;

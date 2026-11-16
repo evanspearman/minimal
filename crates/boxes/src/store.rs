@@ -28,17 +28,17 @@ pub trait BoxObject: Sized + Send + Clone + 'static + std::fmt::Debug {
     fn home_path(&self) -> DaemonAbsPath;
     fn cache_path(&self) -> DaemonAbsPath;
     /// Directory the daemon stages the client-uploaded
-    /// composition patches into, ready for the launcher to
+    /// composition attachments into, ready for the launcher to
     /// materialize into the sandbox home. Each entry is stored
-    /// under the patch's sandbox-home-relative destination path.
-    fn patches_path(&self) -> DaemonAbsPath;
+    /// under the attachment's sandbox-home-relative destination path.
+    fn attachments_path(&self) -> DaemonAbsPath;
     /// Directory the daemon stages the client-uploaded external
     /// lifecycle-hook scripts into. Each entry is stored under the
     /// path [`staged_script_path`] derives from its hook's source, so
     /// the daemon can find a script again from the composition alone.
     ///
-    /// Deliberately not under [`patches_path`](Self::patches_path):
-    /// the whole patch tree is copied into the sandbox home when the
+    /// Deliberately not under [`attachments_path`](Self::attachments_path):
+    /// the whole attachment tree is copied into the sandbox home when the
     /// session finalizes, and hook scripts are not dotfiles.
     ///
     /// [`staged_script_path`]: crate::core::lifecyclehook::staged_script_path
@@ -308,7 +308,7 @@ impl DiskBox {
 
     /// The path of the box's events file, [`EVENTS_FILE`](crate::events::EVENTS_FILE), beside its
     /// record (BOX-040). No path mounted into the box reaches it: the box
-    /// sees only the `tree`, `home`, `cache`, `patches` and `hooks`
+    /// sees only the `tree`, `home`, `cache`, `attachments` and `hooks`
     /// directories beside it (BOX-041). A test pins the literal to
     /// [`EVENTS_FILE`](crate::events::EVENTS_FILE).
     pub fn events_path(&self) -> DaemonAbsPath {
@@ -409,7 +409,7 @@ const TREE_DIR: &str = "tree";
 ///
 /// The files this names, `record.json`, [`EVENTS_FILE`](crate::events::EVENTS_FILE)
 /// and [`LOG_FILE`], sit in this directory itself. The box sees only the
-/// `tree`, `home`, `cache`, `patches` and `hooks` directories under it, so
+/// `tree`, `home`, `cache`, `attachments` and `hooks` directories under it, so
 /// no process inside the box can open them (BOX-041, BOX-164).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoxDir {
@@ -1078,8 +1078,8 @@ impl BoxObject for DiskBox {
     fn cache_path(&self) -> DaemonAbsPath {
         sub_path!(self.root_path(), "cache")
     }
-    fn patches_path(&self) -> DaemonAbsPath {
-        sub_path!(self.root_path(), "patches")
+    fn attachments_path(&self) -> DaemonAbsPath {
+        sub_path!(self.root_path(), "attachments")
     }
     fn hooks_path(&self) -> DaemonAbsPath {
         sub_path!(self.root_path(), "hooks")
@@ -2809,7 +2809,7 @@ mod tests {
             object.workspace_path(),
             object.home_path(),
             object.cache_path(),
-            object.patches_path(),
+            object.attachments_path(),
             object.hooks_path(),
         ] {
             assert!(

@@ -1988,7 +1988,7 @@ fn box_entry(
     if box_type != boxes::TASK_BOX_TYPE {
         wire.vars = list(spec, "vars").map_err(format_error)?;
         wire.vars_lenient = list(spec, "vars_lenient").map_err(format_error)?;
-        wire.patches =
+        wire.attachments =
             list(spec, boxes::core::primitives::ATTACHMENTS_KEY).map_err(format_error)?;
     }
     tracing::info!(
@@ -3111,7 +3111,7 @@ pub(crate) enum ActivationStep {
     UploadFiles,
     /// The loadout composition and its gating.
     ComposeLoadout,
-    /// The patch upload and the finalize that makes the session active.
+    /// The attachment upload and the finalize that makes the session active.
     Finalize,
     /// The `host_ip` name hold on the VM host daemon.
     HoldName,
@@ -4702,7 +4702,7 @@ pub(crate) async fn activate_box(
                 UploadPlan::Skip => {
                     // `--sync none` skips the upload, so the daemon composes against
                     // an empty workspace and the project's `minimal.toml` — packages,
-                    // vars, patches, hooks — is silently dropped. Say so when there
+                    // vars, attachments, hooks — is silently dropped. Say so when there
                     // is a config to lose, so the default-config session is not a
                     // surprise.
                     if let Some(notice) = sync_none_notice(&utf8_path) {
@@ -4747,16 +4747,17 @@ pub(crate) async fn activate_box(
         })
         .await?;
 
-    // Collect the client-side patches (from loadouts, already gated
+    // Collect the client-side attachments (from loadouts, already gated
     // in Phase 1) *before* the wire contribution moves into the
     // ConfigureLoadout RPC. These land in the final Composition
     // whether the response is `Materialized` or `Pending`, so the
-    // client is authoritative for them. Any daemon-side patches
+    // client is authoritative for them. Any daemon-side attachments
     // that come back through a `Pending` response's `SubmitVerdict`
     // get appended below.
-    let mut collected_patches = ActivationStep::ComposeLoadout
+    let mut collected_attachments = ActivationStep::ComposeLoadout
         .run(async {
-            let mut collected_patches = minimal_client::contribution_patch_uploads(&contribution);
+            let mut collected_attachments =
+                minimal_client::contribution_attachment_uploads(&contribution);
 
             // The session exists but has no loadout yet; composing it is a
             // second round-trip because the daemon's composer reads the
@@ -4822,7 +4823,7 @@ pub(crate) async fn activate_box(
                     args.no_prompt || global.no_input || !can_prompt_interactively();
                 if non_interactive {
                     // NoPromptHook fake-approves every unapproved item so
-                    // handle_response finishes both the var and patch gates
+                    // handle_response finishes both the var and attachment gates
                     // and records everything in `summary`. If anything was
                     // recorded, we abort *before* actually shipping the
                     // verdict — the daemon must not see those fake
@@ -4879,7 +4880,7 @@ pub(crate) async fn activate_box(
                             s = if count == 1 { "" } else { "s" },
                         );
                     }
-                    collected_patches.extend(approved_patches_from_verdict(&verdict));
+                    collected_attachments.extend(approved_patches_from_verdict(&verdict));
                     let submitted = submit_verdict_and_wait(&mut client, session_id, verdict).await;
                     if let Err(error) = submitted {
                         // The verdict never landed: the activation is abandoned with
@@ -4914,7 +4915,7 @@ pub(crate) async fn activate_box(
                     )
                     .await;
                     if let Ok((_, _, ref approved)) = result {
-                        collected_patches.extend(approved.iter().cloned());
+                        collected_attachments.extend(approved.iter().cloned());
                     }
                     let final_policy = hooks.into_final_policy();
                     if final_policy != initial_policy {
@@ -4957,14 +4958,14 @@ pub(crate) async fn activate_box(
             // above, so it appears unused to the compiler. Explicit `_` to
             // squash the lint without dropping the useful name.
             let _ = initial_policy;
-            Ok::<_, anyhow::Error>(collected_patches)
+            Ok::<_, anyhow::Error>(collected_attachments)
         })
         .await?;
 
-    // Upload composition patches and finalize the session. This
+    // Upload composition attachments and finalize the session. This
     // has to happen before attach is allowed — a Materializing
-    // session isn't attachable, and the launcher reads patches
-    // from `<workspace>/patches/`. Dedup by sandbox destination:
+    // session isn't attachable, and the launcher reads attachments
+    // from `<workspace>/attachments/`. Dedup by sandbox destination:
     // the composer's post-gate check guarantees any duplicates
     // are exact matches (same source), so collapsing is safe.
     // A Ctrl-C during the finalize tears the activation down. The cleanup
@@ -4976,7 +4977,7 @@ pub(crate) async fn activate_box(
     let mut interrupt_guard = Some(interrupt_guard);
     ActivationStep::Finalize
         .run(async {
-            minimal_client::dedup_patch_uploads(&mut collected_patches);
+            minimal_client::dedup_attachment_uploads(&mut collected_attachments);
             // The registration's lease is held across the finalize and, when
             // that fails, across the cleanup destroy too: only the destroy's
             // answer says whether a box is live behind the row (inbox#690).
@@ -4988,7 +4989,7 @@ pub(crate) async fn activate_box(
             if let Err(e) = upload_and_finalize(
                 &mut client,
                 id,
-                &collected_patches,
+                &collected_attachments,
                 &hook_scripts,
                 finalize_hook_budget,
             )

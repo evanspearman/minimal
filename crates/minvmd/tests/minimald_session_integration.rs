@@ -476,9 +476,9 @@ async fn run_session_exec(
 
     // FinalizeSession: promote the record `Materializing → Active` so the
     // exec below passes minimald's status gate. The task-only mfile yields an
-    // empty composition, so there are no patches to upload first — but
+    // empty composition, so there are no attachments to upload first — but
     // FinalizeSession is still required: the daemon takes the
-    // composition-has-no-patches shortcut past the patches-ready marker check
+    // composition-has-no-attachments shortcut past the attachments-ready marker check
     // and writes the record `Active`. (See crates/minvmd/examples/exec.rs.)
     {
         use minimald_rpc::{FinalizeSession, FinalizeSessionRequest};

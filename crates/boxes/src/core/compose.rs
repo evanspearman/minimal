@@ -14,16 +14,19 @@ use core::fmt;
 use std::collections::BTreeMap;
 
 use crate::core::decision::{CheckOutcome, Decision, ItemDecision};
-use crate::core::enumerate::{ExpandedProvenancedPatch, PatchFile, enumerate_patch_files};
+use crate::core::enumerate::{
+    AttachmentFile, ExpandedProvenancedAttachment, enumerate_attachment_files,
+};
 use crate::core::hooks::{HookResult, PolicyHooks, Unapproved};
 use crate::core::policy::{PatchesPolicy, UserPolicy, VarsPolicy};
-use crate::core::primitives::{ResolvedPatch, ResolvedVar, VarError};
+use crate::core::primitives::{ResolvedAttachment, ResolvedVar, VarError};
 use crate::core::source::{
-    Provenanced, ProvenancedHook, ProvenancedPackage, ProvenancedPatch, ProvenancedVar, Source,
+    Provenanced, ProvenancedAttachment, ProvenancedHook, ProvenancedPackage, ProvenancedVar, Source,
 };
 use crate::wire::policy::{WirePatchVerdict, WireVarVerdict};
 use crate::wire::primitives::{
-    PendingId, WirePendingHook, WirePendingPatch, WirePendingVar, WireSessionPatch, WireSessionVar,
+    PendingId, WirePendingAttachment, WirePendingHook, WirePendingVar, WireSessionAttachment,
+    WireSessionVar,
 };
 
 /// Errors produced while a [`Composable`] materializes its
@@ -37,11 +40,11 @@ pub enum Error {
         #[from]
         source: crate::core::primitives::VarError,
     },
-    /// A patch declaration failed validation.
-    #[error("patch contribution failed: {source}")]
-    Patch {
+    /// An attachment declaration failed validation.
+    #[error("attachment contribution failed: {source}")]
+    Attachment {
         #[from]
-        source: crate::core::primitives::PatchError,
+        source: crate::core::primitives::AttachmentError,
     },
     /// A lifecycle hook declaration failed validation.
     #[error("lifecycle hook contribution failed: {source}")]
@@ -69,7 +72,7 @@ pub enum Error {
 ///
 /// A `Conflict` is *always* fatal today: composition cannot proceed
 /// when contributors disagree on what a single var should resolve to
-/// or where a single patch should come from. The escape hatch is the
+/// or where a single attachment should come from. The escape hatch is the
 /// user's policy ignore list, which (when it matches) drops the
 /// offending items during the gate; conflict detection runs
 /// *post-gate* on the survivors, so ignored items never reach the
@@ -93,10 +96,10 @@ pub enum Conflict {
         /// picture, even though they're not what caused the conflict.
         disagreeing_values: Vec<(Source, String)>,
     },
-    /// Two or more contributors set the same patch destination to
+    /// Two or more contributors set the same attachment destination to
     /// different sources.
-    #[error("{}", PatchSourceMismatchDisplay { dest, disagreeing_sources })]
-    PatchSourceMismatch {
+    #[error("{}", AttachmentSourceMismatchDisplay { dest, disagreeing_sources })]
+    AttachmentSourceMismatch {
         /// The destination (sandbox-relative) that contributors
         /// disagreed on.
         dest: paths::SandboxRelPath,
@@ -110,12 +113,12 @@ pub enum Conflict {
         /// contributor wanted copied.
         disagreeing_sources: Vec<(Source, String)>,
     },
-    /// Two patches want to occupy the same tree node from opposite
+    /// Two attachments want to occupy the same tree node from opposite
     /// sides: one contributor's destination is a component-boundary
     /// prefix of another's, so one wants to place a file where the
     /// other expects a directory (or vice versa). Distinct
-    /// destinations, so `PatchSourceMismatch` doesn't fire — but
-    /// `materialize_patches_into_home` can't create both at Finalize
+    /// destinations, so `AttachmentSourceMismatch` doesn't fire — but
+    /// `materialize_attachments_into_home` can't create both at Finalize
     /// time (whichever `fs::copy` runs second fails). Caught here so
     /// the operator gets a Compose-time error naming both
     /// contributors instead of a mid-Finalize `NotADirectory` /
@@ -123,13 +126,13 @@ pub enum Conflict {
     /// `Materializing`.
     #[error(
         "{}",
-        PatchDestPrefixCollisionDisplay {
+        AttachmentDestPrefixCollisionDisplay {
             shorter,
             longer,
             contributors
         }
     )]
-    PatchDestPrefixCollision {
+    AttachmentDestPrefixCollision {
         /// The shorter destination — the one that would land as a
         /// file directly under `<home>`.
         shorter: paths::SandboxRelPath,
@@ -177,19 +180,22 @@ impl fmt::Display for VarValueMismatchDisplay<'_> {
     }
 }
 
-/// Renders [`Conflict::PatchSourceMismatch`]'s multi-line message.
-struct PatchSourceMismatchDisplay<'a> {
+/// Renders [`Conflict::AttachmentSourceMismatch`]'s multi-line message.
+struct AttachmentSourceMismatchDisplay<'a> {
     dest: &'a paths::SandboxRelPath,
     disagreeing_sources: &'a Vec<(Source, String)>,
 }
 
-impl fmt::Display for PatchSourceMismatchDisplay<'_> {
+impl fmt::Display for AttachmentSourceMismatchDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self {
             dest,
             disagreeing_sources,
         } = self;
-        write!(f, "patch destination `{dest}` has conflicting sources:")?;
+        write!(
+            f,
+            "attachment destination `{dest}` has conflicting sources:"
+        )?;
         for (source, src) in *disagreeing_sources {
             write!(f, "\n  - {src:?} (from {source})")?;
         }
@@ -199,20 +205,20 @@ impl fmt::Display for PatchSourceMismatchDisplay<'_> {
         write!(
             f,
             "\nhint: add a pattern matching the conflicting source path(s) \
-             above to your patch policy's ignore list to drop both, \
+             above to `ignore` under `[patches]` in user_policy.toml to drop both, \
              or remove one of the contributors"
         )
     }
 }
 
-/// Renders [`Conflict::PatchDestPrefixCollision`]'s multi-line message.
-struct PatchDestPrefixCollisionDisplay<'a> {
+/// Renders [`Conflict::AttachmentDestPrefixCollision`]'s multi-line message.
+struct AttachmentDestPrefixCollisionDisplay<'a> {
     shorter: &'a paths::SandboxRelPath,
     longer: &'a paths::SandboxRelPath,
     contributors: &'a [(Source, paths::SandboxRelPath); 2],
 }
 
-impl fmt::Display for PatchDestPrefixCollisionDisplay<'_> {
+impl fmt::Display for AttachmentDestPrefixCollisionDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self {
             shorter,
@@ -221,7 +227,7 @@ impl fmt::Display for PatchDestPrefixCollisionDisplay<'_> {
         } = self;
         write!(
             f,
-            "patch destinations `{shorter}` and `{longer}` collide: \
+            "attachment destinations `{shorter}` and `{longer}` collide: \
              one wants a file where the other expects a directory"
         )?;
         for (source, dest) in *contributors {
@@ -231,8 +237,8 @@ impl fmt::Display for PatchDestPrefixCollisionDisplay<'_> {
             f,
             "\nhint: pick destinations that don't nest — e.g. move the \
              file target under a distinct name, or add a pattern \
-             matching one contributor's source to your patch policy's \
-             ignore list to drop it"
+             matching one contributor's source to `ignore` under `[patches]` \
+             in user_policy.toml to drop it"
         )
     }
 }
@@ -249,7 +255,7 @@ pub(crate) use conflict::*;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Contribution {
     pub(crate) vars: Vec<ProvenancedVar>,
-    pub(crate) patches: Vec<ProvenancedPatch>,
+    pub(crate) attachments: Vec<ProvenancedAttachment>,
     pub(crate) packages: Vec<ProvenancedPackage>,
     pub(crate) lifecycle_hooks: Vec<ProvenancedHook>,
 }
@@ -266,9 +272,9 @@ impl Contribution {
         self.vars.push(v);
     }
 
-    /// Append a patch in place.
-    pub fn push_patch(&mut self, p: ProvenancedPatch) {
-        self.patches.push(p);
+    /// Append an attachment in place.
+    pub fn push_attachment(&mut self, p: ProvenancedAttachment) {
+        self.attachments.push(p);
     }
 
     /// Append a package in place.
@@ -282,20 +288,20 @@ impl Contribution {
     }
 
     /// Overwrite the `follow_symlinks` override on every currently
-    /// accumulated patch. Used by
+    /// accumulated attachment. Used by
     /// [`Loadout::contribute`](crate::core::loadout::Loadout::contribute)
     /// to stamp the loadout's per-source override after
-    /// `contribute_primitives` produced patches with the default
+    /// `contribute_primitives` produced attachments with the default
     /// `None`.
-    pub fn set_follow_symlinks_on_patches(&mut self, follow: Option<bool>) {
-        for p in std::mem::take(&mut self.patches) {
-            let (patch, source, _) = p.into_parts();
-            self.patches
-                .push(ProvenancedPatch::new(patch, source).with_follow_symlinks(follow));
+    pub fn set_follow_symlinks_on_attachments(&mut self, follow: Option<bool>) {
+        for p in std::mem::take(&mut self.attachments) {
+            let (attachment, source, _) = p.into_parts();
+            self.attachments
+                .push(ProvenancedAttachment::new(attachment, source).with_follow_symlinks(follow));
         }
     }
 
-    /// Merge `other` into `self`: concatenate vars/patches/hooks and
+    /// Merge `other` into `self`: concatenate vars/attachments/hooks and
     /// dedupe packages. Cross-contributor conflicts are detected
     /// post-gate in [`compose_contribution`], not here.
     ///
@@ -309,7 +315,7 @@ impl Contribution {
     )]
     pub(crate) fn merge(&mut self, other: Contribution) -> Result<(), Conflict> {
         self.vars.extend(other.vars);
-        self.patches.extend(other.patches);
+        self.attachments.extend(other.attachments);
         self.packages.extend(other.packages);
         dedupe_by_name(&mut self.packages, ProvenancedPackage::package);
         self.lifecycle_hooks.extend(other.lifecycle_hooks);
@@ -317,25 +323,25 @@ impl Contribution {
     }
 
     /// Drop the items a *package* supplied that we refuse to compose:
-    /// every patch tagged [`Source::Package`], and every
+    /// every attachment tagged [`Source::Package`], and every
     /// [`Source::Package`] var that carries user data (an env-inherited
     /// value — [`ResolvedVar::carries_user_data`]).
     ///
     /// A package var with a static (non-user) value, a package's request
     /// for a package (the `packages` list), and every item from a
     /// non-package source are all left untouched. Because vars and
-    /// patches are never deduped across sources (each contributor keeps
+    /// attachments are never deduped across sources (each contributor keeps
     /// its own entry — see [`Self::merge`]), dropping the package's own
     /// entry here still leaves any project- or loadout-supplied entry for
-    /// the same var name / patch destination intact: an item requested by
+    /// the same var name / attachment destination intact: an item requested by
     /// a package *and* something else still composes in, via that other
     /// source.
     ///
     /// [`Source::Package`]: crate::core::source::Source::Package
     /// [`ResolvedVar::carries_user_data`]: crate::core::primitives::ResolvedVar::carries_user_data
-    pub(crate) fn drop_package_supplied_patches_and_user_data_vars(&mut self) {
+    pub(crate) fn drop_package_supplied_attachments_and_user_data_vars(&mut self) {
         use crate::core::source::{Provenanced, Source};
-        self.patches
+        self.attachments
             .retain(|p| !matches!(p.source(), Source::Package { .. }));
         self.vars.retain(|v| {
             !(matches!(v.source(), Source::Package { .. }) && v.var().carries_user_data())
@@ -348,7 +354,7 @@ impl Contribution {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.vars.is_empty()
-            && self.patches.is_empty()
+            && self.attachments.is_empty()
             && self.packages.is_empty()
             && self.lifecycle_hooks.is_empty()
     }
@@ -359,10 +365,10 @@ impl Contribution {
         &self.vars
     }
 
-    /// All patches contributed so far.
+    /// All attachments contributed so far.
     #[must_use]
-    pub fn patches(&self) -> &[ProvenancedPatch] {
-        &self.patches
+    pub fn attachments(&self) -> &[ProvenancedAttachment] {
+        &self.attachments
     }
 
     /// All packages contributed so far.
@@ -403,7 +409,7 @@ pub fn deferring_env() -> StoredEnv {
     Box::new(|_name| Ok(String::new()))
 }
 
-/// Anything that can contribute primitives (vars, patches, packages,
+/// Anything that can contribute primitives (vars, attachments, packages,
 /// lifecycle hooks) to a composer during session construction.
 ///
 /// The current implementor is [`crate::core::loadout::Loadout`]. Project-
@@ -422,7 +428,7 @@ pub trait Composable {
     ///
     /// Implementations return an [`Error`] when their primitives fail
     /// their own construction-time validation (e.g. an invalid glob,
-    /// an empty patch destination, or an env lookup that surfaced an
+    /// an empty attachment destination, or an env lookup that surfaced an
     /// error).
     fn contribute(
         self,
@@ -431,13 +437,13 @@ pub trait Composable {
 }
 
 /// Build a [`Contribution`] from a loadout-shaped primitive set
-/// (packages, strict vars, lenient vars, patches, lifecycle hooks)
+/// (packages, strict vars, lenient vars, attachments, lifecycle hooks)
 /// against a single [`Source`], resolving each var against `env`.
 ///
 /// Shared by [`crate::core::loadout::Loadout`]'s and every project /
 /// package composable's `contribute`, so lifting the loop bodies into
 /// one helper prevents the impls from drifting when a new primitive
-/// lands. For packages, patches, and hooks the only per-source
+/// lands. For packages, attachments, and hooks the only per-source
 /// difference is the [`Source`] tag stamped on every produced item.
 ///
 /// **Vars are the exception.** [`Loadout::contribute`] passes empty
@@ -474,13 +480,13 @@ pub fn contribute_primitives(
         crate::core::primitives::VarValue,
     >,
     vars_lenient: Vec<crate::core::primitives::LenientVarEntry>,
-    patches: crate::core::primitives::Patches,
+    attachments: crate::core::primitives::Attachments,
     lifecycle_hooks: Vec<crate::core::lifecyclehook::LifecycleHook>,
     env: &dyn Fn(&str) -> Result<String, std::env::VarError>,
 ) -> Result<Contribution, Error> {
     use crate::core::primitives::ResolvedVar;
     use crate::core::source::{
-        ProvenancedHook, ProvenancedPackage, ProvenancedPatch, ProvenancedVar,
+        ProvenancedAttachment, ProvenancedHook, ProvenancedPackage, ProvenancedVar,
     };
 
     let mut c = Contribution::new();
@@ -493,8 +499,8 @@ pub fn contribute_primitives(
         let resolved = ResolvedVar::resolve_with(name.into_inner(), value, env)?;
         c.push_var(ProvenancedVar::new(resolved, source.clone()));
     }
-    for patch in patches {
-        c.push_patch(ProvenancedPatch::new(patch, source.clone()));
+    for attachment in attachments {
+        c.push_attachment(ProvenancedAttachment::new(attachment, source.clone()));
     }
     for pkg in packages {
         c.push_package(ProvenancedPackage::new(pkg, source.clone()));
@@ -536,13 +542,13 @@ pub enum ComposeError {
     /// bug in the caller, not a normal failure mode.
     #[error("non-user-origin `{what}` (from {from}) requires a policy hook, but none was provided")]
     HookRequired { what: String, from: Source },
-    /// One or more patch source filesystem walks failed with IO-level
+    /// One or more attachment source filesystem walks failed with IO-level
     /// errors (permission denied, non-UTF-8 paths, etc.). All errors
     /// surfaced by every `FileSet::resolve` invocation are accumulated
     /// — none are discarded.
-    #[error("patch enumeration produced {} error{}:{}", sources.len(), if sources.len() == 1 { "" } else { "s" }, DisplayJoin(sources))]
-    PatchWalk {
-        sources: Vec<crate::core::primitives::PatchError>,
+    #[error("attachment enumeration produced {} error{}:{}", sources.len(), if sources.len() == 1 { "" } else { "s" }, DisplayJoin(sources))]
+    AttachmentWalk {
+        sources: Vec<crate::core::primitives::AttachmentError>,
     },
     /// A wire-form item failed conversion back to its domain type —
     /// typically a data-shape invariant the domain type enforces but
@@ -555,23 +561,23 @@ pub enum ComposeError {
         /// Free-form context.
         context: String,
     },
-    /// A pending patch's destination violates [`PatchDest`]'s
+    /// A pending attachment's destination violates [`AttachmentDest`]'s
     /// invariants (empty path, traversal component, absolute path).
     /// Surfaces from `handle_response` when reconstructing a
-    /// `WirePendingPatch` into its domain form.
+    /// `WirePendingAttachment` into its domain form.
     ///
-    /// [`PatchDest`]: crate::core::primitives::PatchDest
-    #[error("invalid pending patch destination: {source}")]
-    InvalidPendingPatchDest {
+    /// [`AttachmentDest`]: crate::core::primitives::AttachmentDest
+    #[error("invalid pending attachment destination: {source}")]
+    InvalidPendingAttachmentDest {
         #[source]
-        source: crate::core::primitives::PatchError,
+        source: crate::core::primitives::AttachmentError,
     },
-    /// Expanding `~/` or `$VAR` references in a patch source or policy
+    /// Expanding `~/` or `$VAR` references in an attachment source or policy
     /// pattern failed. Surfaces every failure mode of
     /// [`expand_source`](crate::core::expansion::expand_source): malformed
     /// syntax, a referenced var that is not in the resolved-vars set,
     /// or a post-expansion string that fails to parse as a glob.
-    #[error("patch source expansion failed: {0}")]
+    #[error("attachment source expansion failed: {0}")]
     Expansion(#[from] crate::core::expansion::ExpandError),
     /// A pending var with an `Inherit`-shaped spec could not be
     /// resolved against the client's environment (e.g. the variable
@@ -586,7 +592,7 @@ pub enum ComposeError {
         #[source]
         source: std::env::VarError,
     },
-    /// Two contributors disagreed on a var value or patch source.
+    /// Two contributors disagreed on a var value or attachment source.
     /// Surfaces from the post-gate checks in
     /// [`compose_contribution`] (each side's own composition) and
     /// from the cross-process merge in
@@ -719,47 +725,47 @@ impl From<WireSessionVar> for SessionVar {
     }
 }
 
-/// One patch file that survived the policy gate, paired with its
+/// One attachment file that survived the policy gate, paired with its
 /// origin. See [`SessionVar`] for the rationale.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SessionPatch {
-    patch: ResolvedPatch,
+pub struct SessionAttachment {
+    attachment: ResolvedAttachment,
     source: Source,
 }
 
-impl SessionPatch {
+impl SessionAttachment {
     /// Direct construction. Crate-internal so external callers can
-    /// only obtain a `SessionPatch` via the gate or from a
-    /// [`WireSessionPatch`] — both post-gate by construction.
+    /// only obtain a `SessionAttachment` via the gate or from a
+    /// [`WireSessionAttachment`] — both post-gate by construction.
     #[must_use]
-    pub(crate) fn new(patch: ResolvedPatch, source: Source) -> Self {
-        Self { patch, source }
+    pub(crate) fn new(attachment: ResolvedAttachment, source: Source) -> Self {
+        Self { attachment, source }
     }
 
-    /// The resolved patch — host source path plus the destination
+    /// The resolved attachment — host source path plus the destination
     /// relative to the sandbox user's home directory.
     #[must_use]
-    pub fn patch(&self) -> &ResolvedPatch {
-        &self.patch
+    pub fn attachment(&self) -> &ResolvedAttachment {
+        &self.attachment
     }
 
-    /// Consume the [`SessionPatch`] and return `(patch, source)`.
+    /// Consume the [`SessionAttachment`] and return `(attachment, source)`.
     #[must_use]
-    pub fn into_parts(self) -> (ResolvedPatch, Source) {
-        (self.patch, self.source)
+    pub fn into_parts(self) -> (ResolvedAttachment, Source) {
+        (self.attachment, self.source)
     }
 }
 
-impl Provenanced for SessionPatch {
+impl Provenanced for SessionAttachment {
     fn source(&self) -> &Source {
         &self.source
     }
 }
 
-impl From<WireSessionPatch> for SessionPatch {
-    fn from(p: WireSessionPatch) -> Self {
+impl From<WireSessionAttachment> for SessionAttachment {
+    fn from(p: WireSessionAttachment) -> Self {
         Self {
-            patch: p.patch.into(),
+            attachment: p.attachment.into(),
             source: p.source.into(),
         }
     }
@@ -871,33 +877,33 @@ impl PendingVar {
 }
 
 /// One filesystem entry the daemon emitted as pending: id-tagged for
-/// wire correlation, paired with the canonical [`PatchFile`] the
+/// wire correlation, paired with the canonical [`AttachmentFile`] the
 /// client's walker produced.
 ///
-/// Bridges wire and domain on the patch verdict-emitting side, same
+/// Bridges wire and domain on the attachment verdict-emitting side, same
 /// role as [`PendingVar`] does for vars.
-pub(crate) struct PendingPatchFile {
+pub(crate) struct PendingAttachmentFile {
     id: PendingId,
-    file: PatchFile,
+    file: AttachmentFile,
 }
 
-impl PendingPatchFile {
+impl PendingAttachmentFile {
     #[must_use]
-    pub(crate) fn new(id: PendingId, file: PatchFile) -> Self {
+    pub(crate) fn new(id: PendingId, file: AttachmentFile) -> Self {
         Self { id, file }
     }
 
     /// Borrow the underlying file (e.g. to build an `Unapproved`
     /// view for hook prompts).
     #[must_use]
-    pub(crate) fn file(&self) -> &PatchFile {
+    pub(crate) fn file(&self) -> &AttachmentFile {
         &self.file
     }
 
-    /// Consume into `(id, PatchFile)` so the classifier can hand the
+    /// Consume into `(id, AttachmentFile)` so the classifier can hand the
     /// file into `policy.check`.
     #[must_use]
-    pub(crate) fn into_parts(self) -> (PendingId, PatchFile) {
+    pub(crate) fn into_parts(self) -> (PendingId, AttachmentFile) {
         (self.id, self.file)
     }
 
@@ -905,7 +911,7 @@ impl PendingPatchFile {
     /// target path and the client-computed per-file destination
     /// back to the daemon. The daemon reuses `destination` verbatim
     /// so a dir mapping's file fan-out lands at distinct sandbox
-    /// paths instead of collapsing onto the pending patch's base
+    /// paths instead of collapsing onto the pending attachment's base
     /// dest.
     #[must_use]
     pub(crate) fn into_approved_verdict(self) -> WirePatchVerdict {
@@ -945,14 +951,14 @@ pub struct Orientation {
 
 /// Everything that survived the policy gate.
 ///
-/// Vars and patches are policy-gated. Packages and lifecycle hooks
+/// Vars and attachments are policy-gated. Packages and lifecycle hooks
 /// pass through unchanged — packages are graph-resolved downstream,
 /// and hooks execute inside an isolated environment, so neither has a
 /// policy in this layer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Composition {
     vars: Vec<SessionVar>,
-    patches: Vec<SessionPatch>,
+    attachments: Vec<SessionAttachment>,
     packages: Vec<ProvenancedPackage>,
     lifecycle_hooks: Vec<ProvenancedHook>,
     /// First-prompt orientation facts; see [`Orientation`]. Client-set:
@@ -975,12 +981,12 @@ impl Composition {
         &self.vars
     }
 
-    /// The patches that survived the policy gate, each paired with its
-    /// source. Multi-file patches appear as one [`SessionPatch`] per
+    /// The attachments that survived the policy gate, each paired with its
+    /// source. Multi-file attachments appear as one [`SessionAttachment`] per
     /// matched file.
     #[must_use]
-    pub fn patches(&self) -> &[SessionPatch] {
-        &self.patches
+    pub fn attachments(&self) -> &[SessionAttachment] {
+        &self.attachments
     }
 
     /// The packages contributed to the session, each paired with its
@@ -1027,11 +1033,16 @@ impl Composition {
         self,
     ) -> (
         Vec<SessionVar>,
-        Vec<SessionPatch>,
+        Vec<SessionAttachment>,
         Vec<ProvenancedPackage>,
         Vec<ProvenancedHook>,
     ) {
-        (self.vars, self.patches, self.packages, self.lifecycle_hooks)
+        (
+            self.vars,
+            self.attachments,
+            self.packages,
+            self.lifecycle_hooks,
+        )
     }
 
     /// Append an already-gated wire contribution. The wire form has
@@ -1043,7 +1054,7 @@ impl Composition {
     /// or a `Conflict`), `self` is untouched.
     ///
     /// Per-domain rules at this cross-process merge: vars and
-    /// patches error on mismatched values / sources (same name +
+    /// attachments error on mismatched values / sources (same name +
     /// same value or same dest + same source is harmless and both
     /// kept); packages deduplicate by name; lifecycle hooks
     /// concatenate.
@@ -1052,7 +1063,7 @@ impl Composition {
     ///
     /// - [`ComposeError::InvalidWireItem`] if a wire lifecycle hook
     ///   has no callbacks.
-    /// - [`ComposeError::Conflict`] if a wire var or patch disagrees
+    /// - [`ComposeError::Conflict`] if a wire var or attachment disagrees
     ///   with one already in `self`.
     pub(crate) fn extend_from_wire(
         &mut self,
@@ -1074,8 +1085,11 @@ impl Composition {
             })
             .collect::<Result<Vec<ProvenancedHook>, _>>()?;
         let incoming_vars: Vec<SessionVar> = wire.vars.into_iter().map(SessionVar::from).collect();
-        let incoming_patches: Vec<SessionPatch> =
-            wire.patches.into_iter().map(SessionPatch::from).collect();
+        let incoming_attachments: Vec<SessionAttachment> = wire
+            .attachments
+            .into_iter()
+            .map(SessionAttachment::from)
+            .collect();
         let incoming_packages: Vec<ProvenancedPackage> = wire
             .requested_packages
             .into_iter()
@@ -1085,13 +1099,13 @@ impl Composition {
         // Run conflict checks against the chained union before
         // touching `self`. `Conflict` propagates through
         // `ComposeError::Conflict` via the `#[from]` impl.
-        self.check_incoming_conflicts(&incoming_vars, &incoming_patches)?;
+        self.check_incoming_conflicts(&incoming_vars, &incoming_attachments)?;
 
         // Checks passed — commit. The client is the sole source of
         // orientation (the daemon passthrough never populates it), so
         // its value is installed rather than merged.
         self.vars.extend(incoming_vars);
-        self.patches.extend(incoming_patches);
+        self.attachments.extend(incoming_attachments);
         self.packages.extend(incoming_packages);
         dedupe_by_name(&mut self.packages, ProvenancedPackage::package);
         self.lifecycle_hooks.extend(incoming_hooks);
@@ -1109,54 +1123,55 @@ impl Composition {
         dedupe_by_name(&mut packages, ProvenancedPackage::package);
         Self {
             vars: Vec::new(),
-            patches: Vec::new(),
+            attachments: Vec::new(),
             packages,
             lifecycle_hooks,
             orientation: Orientation::default(),
         }
     }
 
-    /// Append already-gated vars and patches. Atomic: conflict
+    /// Append already-gated vars and attachments. Atomic: conflict
     /// checks run against the union before any mutation; on `Err`,
     /// `self` is untouched.
     ///
     /// # Errors
     ///
-    /// [`ComposeError::Conflict`] if an incoming var or patch
+    /// [`ComposeError::Conflict`] if an incoming var or attachment
     /// disagrees with one already in `self`.
     pub(crate) fn extend_with(
         &mut self,
         vars: Vec<SessionVar>,
-        patches: Vec<SessionPatch>,
+        attachments: Vec<SessionAttachment>,
     ) -> Result<(), ComposeError> {
-        self.check_incoming_conflicts(&vars, &patches)?;
+        self.check_incoming_conflicts(&vars, &attachments)?;
         self.vars.extend(vars);
-        self.patches.extend(patches);
+        self.attachments.extend(attachments);
         Ok(())
     }
 
-    /// Run the cross-set var- and patch-mismatch checks against the
+    /// Run the cross-set var- and attachment-mismatch checks against the
     /// union of `self` and the incoming items. Shared by
     /// [`Self::extend_from_wire`] and [`Self::extend_with`] so both
     /// atomic-precheck paths run the exact same conflict semantics.
     fn check_incoming_conflicts(
         &self,
         incoming_vars: &[SessionVar],
-        incoming_patches: &[SessionPatch],
+        incoming_attachments: &[SessionAttachment],
     ) -> Result<(), ComposeError> {
         check_var_mismatches(
             self.vars.iter().chain(incoming_vars.iter()),
             |v| v.var().name(),
             |v| v.var().value(),
         )?;
-        check_patch_mismatches(
-            self.patches.iter().chain(incoming_patches.iter()),
-            |p| p.patch().destination(),
-            |p| p.patch().host_path().as_str(),
+        check_attachment_mismatches(
+            self.attachments.iter().chain(incoming_attachments.iter()),
+            |p| p.attachment().destination(),
+            |p| p.attachment().host_path().as_str(),
         )?;
-        check_patch_prefix_collisions(self.patches.iter().chain(incoming_patches.iter()), |p| {
-            p.patch().destination()
-        })?;
+        check_attachment_prefix_collisions(
+            self.attachments.iter().chain(incoming_attachments.iter()),
+            |p| p.attachment().destination(),
+        )?;
         Ok(())
     }
 }
@@ -1168,7 +1183,7 @@ impl Composition {
 /// the exact composition that was approved at `min session activate` time.
 ///
 /// Fallible only on lifecycle hooks (a wire hook with no callbacks
-/// is rejected); vars, patches, and packages convert infallibly via
+/// is rejected); vars, attachments, and packages convert infallibly via
 /// their existing `From` impls.
 impl TryFrom<crate::wire::request::WireComposition> for Composition {
     type Error = ComposeError;
@@ -1186,7 +1201,7 @@ impl TryFrom<crate::wire::request::WireComposition> for Composition {
             .collect::<Result<_, _>>()?;
         Ok(Self {
             vars: wire.vars.into_iter().map(Into::into).collect(),
-            patches: wire.patches.into_iter().map(Into::into).collect(),
+            attachments: wire.attachments.into_iter().map(Into::into).collect(),
             packages: wire.packages.into_iter().map(Into::into).collect(),
             lifecycle_hooks: hooks,
             orientation: wire.orientation.into(),
@@ -1198,12 +1213,12 @@ impl TryFrom<crate::wire::request::WireComposition> for Composition {
 ///
 /// Defaults to symlink-safe behavior (no following) — appropriate for
 /// dotfile trees where a symlink may legitimately point outside the
-/// patch source.
+/// attachment source.
 #[derive(Clone, Copy, Debug, Default)]
 #[non_exhaustive]
 pub struct ComposeOptions {
     /// If `true`, [`FileSet::resolve`](crate::core::primitives::FileSet::resolve)
-    /// follows symlinks while walking patch sources. Off by default.
+    /// follows symlinks while walking attachment sources. Off by default.
     pub follow_symlinks: bool,
 }
 
@@ -1227,26 +1242,26 @@ impl ComposeOptions {
 /// per-*pattern* and already resolved. This one is per-*batch* and
 /// still holds the loadouts directory rather than one loadout's
 /// subdirectory of it, because which subdirectory applies is a property
-/// of each patch's own [`Source`] —
-/// [`expand_patch_sources`] derives it per item.
+/// of each attachment's own [`Source`] —
+/// [`expand_attachment_sources`] derives it per item.
 ///
-/// The two fields travel together through the whole patch pipeline
-/// (`compose_contribution` → `gate_patches` → `expand_patch_sources`),
+/// The two fields travel together through the whole attachment pipeline
+/// (`compose_contribution` → `gate_patches` → `expand_attachment_sources`),
 /// so they ride as one value rather than as a pair of positional
 /// `Option`s that are easy to transpose.
 #[derive(Clone, Copy, Debug, Default)]
 #[non_exhaustive]
-pub(crate) struct PatchAnchors<'a> {
+pub(crate) struct AttachmentAnchors<'a> {
     /// `HOME` for the `~` / `~/…` prefix, when the session's vars don't
     /// carry one. Explicit `$HOME` references stay strict.
     pub(crate) home: Option<&'a str>,
     /// Where the user's loadout files were read from. `None` — the
-    /// daemon-response path, which sees no loadouts — means no patch in
+    /// daemon-response path, which sees no loadouts — means no attachment in
     /// the batch can resolve `$LOADOUT_ROOT`.
     pub(crate) loadouts_dir: Option<&'a paths::HostAbsPath>,
 }
 
-impl<'a> PatchAnchors<'a> {
+impl<'a> AttachmentAnchors<'a> {
     /// Anchors carrying only a `HOME` fallback — the shape every
     /// caller that composes no loadouts wants.
     #[must_use]
@@ -1267,8 +1282,8 @@ impl<'a> PatchAnchors<'a> {
         self
     }
 
-    /// The directory a patch declared by `provenance` anchors
-    /// `$LOADOUT_ROOT` at — its own loadout's, or `None` for a patch no
+    /// The directory an attachment declared by `provenance` anchors
+    /// `$LOADOUT_ROOT` at — its own loadout's, or `None` for an attachment no
     /// loadout declared (and for a batch with no loadouts directory).
     ///
     /// Returned owned rather than folded straight into an
@@ -1312,7 +1327,7 @@ pub(crate) fn prompt_var_hook(
     }
 }
 
-/// Invoke a patch-domain hook on a batch of unapproved files. Same
+/// Invoke an attachment-domain hook on a batch of unapproved files. Same
 /// shape as [`prompt_var_hook`], plus a `bool` indicating whether
 /// the hook installed an `updated_policy` — the caller uses that
 /// flag to decide whether to re-expand the policy's patterns against
@@ -1375,7 +1390,7 @@ pub(crate) fn prompt_hook_hook(
 /// Used by Pass 1 (categorizing every item) and by Pass 3's `UseRule`
 /// branch (re-checking after the hook mutated the policy). The caller
 /// supplies extractors for the `Denied` arm so the helper stays
-/// agnostic to whether items are vars or patches.
+/// agnostic to whether items are vars or attachments.
 pub(crate) fn apply_decision<T>(
     decision: Decision<T>,
     allowed: &mut Vec<T>,
@@ -1588,35 +1603,35 @@ pub(crate) fn gate_vars(
     ))
 }
 
-/// Expand every patch's raw source string against `gated_vars` and
+/// Expand every attachment's raw source string against `gated_vars` and
 /// return the parallel list with `FileSet` sources. Fails fast on the
 /// first [`ExpandError`](crate::core::expansion::ExpandError); a partial
-/// expansion would let some patches reach the walker with their
+/// expansion would let some attachments reach the walker with their
 /// references intact, which silently matches wrong paths.
 ///
 /// `anchors` carries the batch-wide `HOME` fallback and the directory
-/// the user's loadout files were read from; each patch a loadout
+/// the user's loadout files were read from; each attachment a loadout
 /// declared expands `$LOADOUT_ROOT` against its own subdirectory of
-/// that (see [`PatchAnchors::loadout_root`]). A patch from a
+/// that (see [`AttachmentAnchors::loadout_root`]). An attachment from a
 /// non-loadout source has no such anchor, so a `$LOADOUT_ROOT`
 /// reference there is an error rather than a path pointing at someone
 /// else's tree.
 ///
-/// Per-patch `follow_symlinks` is resolved here: any `Some(v)` carried
-/// on the [`ProvenancedPatch`] wins; `None` inherits
+/// Per-attachment `follow_symlinks` is resolved here: any `Some(v)` carried
+/// on the [`ProvenancedAttachment`] wins; `None` inherits
 /// `default_follow_symlinks`. The resolved bool is stamped onto the
-/// emitted [`ExpandedProvenancedPatch`] so downstream code doesn't
+/// emitted [`ExpandedProvenancedAttachment`] so downstream code doesn't
 /// have to re-consult a sidecar map.
-pub(crate) fn expand_patch_sources(
-    patches: Vec<ProvenancedPatch>,
+pub(crate) fn expand_attachment_sources(
+    attachments: Vec<ProvenancedAttachment>,
     gated_vars: &[SessionVar],
-    anchors: PatchAnchors<'_>,
+    anchors: AttachmentAnchors<'_>,
     default_follow_symlinks: bool,
-) -> Result<Vec<ExpandedProvenancedPatch>, ComposeError> {
-    patches
+) -> Result<Vec<ExpandedProvenancedAttachment>, ComposeError> {
+    attachments
         .into_iter()
         .map(|pp| {
-            let (patch, provenance, follow_override) = pp.into_parts();
+            let (attachment, provenance, follow_override) = pp.into_parts();
             let loadout_root = anchors.loadout_root(&provenance);
             let project_root = match &provenance {
                 Source::Project { path } => Some(path.as_str()),
@@ -1626,14 +1641,14 @@ pub(crate) fn expand_patch_sources(
                 .with_loadout_root(loadout_root.as_ref().map(paths::HostAbsPath::as_str))
                 .with_project_root(project_root);
             let (source, plain_directory) = crate::core::expansion::expand_source_with_plain_dir(
-                patch.source(),
+                attachment.source(),
                 gated_vars,
                 pattern_anchors,
             )?;
             let follow_symlinks = follow_override.unwrap_or(default_follow_symlinks);
-            Ok(ExpandedProvenancedPatch {
+            Ok(ExpandedProvenancedAttachment {
                 source,
-                dest: patch.dest().clone(),
+                dest: attachment.dest().clone(),
                 provenance,
                 follow_symlinks,
                 plain_directory,
@@ -1642,21 +1657,21 @@ pub(crate) fn expand_patch_sources(
         .collect()
 }
 
-/// Drive the policy pass over a batch of patches.
+/// Drive the policy pass over a batch of attachments.
 ///
 /// `hooks` is `None` for user-only composition — see [`gate_vars`].
 /// `anchors` is what the patterns expand against — see
-/// [`expand_patch_sources`].
+/// [`expand_attachment_sources`].
 pub(crate) fn gate_patches(
-    items: Vec<ProvenancedPatch>,
+    items: Vec<ProvenancedAttachment>,
     mut policy: PatchesPolicy,
     hooks: Option<&dyn PolicyHooks>,
     options: ComposeOptions,
     gated_vars: &[SessionVar],
-    anchors: PatchAnchors<'_>,
-) -> Result<(Vec<SessionPatch>, PatchesPolicy), ComposeError> {
-    let name_of = |pf: &PatchFile| pf.user_facing().as_str().to_owned();
-    let source_of = |pf: PatchFile| pf.provenance;
+    anchors: AttachmentAnchors<'_>,
+) -> Result<(Vec<SessionAttachment>, PatchesPolicy), ComposeError> {
+    let name_of = |pf: &AttachmentFile| pf.user_facing().as_str().to_owned();
+    let source_of = |pf: AttachmentFile| pf.provenance;
 
     // Two policies in flight:
     //   - `policy` (raw): handed to the hook, returned to the caller —
@@ -1674,13 +1689,13 @@ pub(crate) fn gate_patches(
     // no IO context for.
     let mut expanded = policy.expand_with(gated_vars, anchors.home)?;
 
-    let expanded_patches =
-        expand_patch_sources(items, gated_vars, anchors, options.follow_symlinks)?;
-    let files = enumerate_patch_files(expanded_patches)?;
+    let expanded_attachments =
+        expand_attachment_sources(items, gated_vars, anchors, options.follow_symlinks)?;
+    let files = enumerate_attachment_files(expanded_attachments)?;
 
     // Pass 1: categorize per file.
-    let mut allowed: Vec<PatchFile> = Vec::new();
-    let mut unapproved: Vec<PatchFile> = Vec::new();
+    let mut allowed: Vec<AttachmentFile> = Vec::new();
+    let mut unapproved: Vec<AttachmentFile> = Vec::new();
     for pf in files {
         let link = pf
             .link_path
@@ -1747,13 +1762,13 @@ pub(crate) fn gate_patches(
     Ok((
         allowed
             .into_iter()
-            .map(|pf| SessionPatch {
+            .map(|pf| SessionAttachment {
                 // `host_path` is the *canonical target* — that's where
                 // the content actually lives. `dest` is computed from
                 // the user-facing (link if distinct, target otherwise)
                 // path's relationship to the walk root, so the user's
                 // structural intent is preserved.
-                patch: ResolvedPatch::new(pf.target_path, pf.dest),
+                attachment: ResolvedAttachment::new(pf.target_path, pf.dest),
                 source: pf.provenance,
             })
             .collect(),
@@ -1764,7 +1779,7 @@ pub(crate) fn gate_patches(
 /// Compose a populated [`Contribution`] into a [`Composition`].
 ///
 /// The shared core of both composers: applies the policy, drives any
-/// needed hook prompts (when `hooks` is `Some`), runs patch expansion
+/// needed hook prompts (when `hooks` is `Some`), runs attachment expansion
 /// against the resolved vars, and assembles the final structure.
 ///
 /// `anchors` carries the `HOME` fallback and, for `$LOADOUT_ROOT`, the
@@ -1780,11 +1795,11 @@ pub(crate) fn compose_contribution(
     policy: UserPolicy,
     hooks: Option<&dyn PolicyHooks>,
     options: ComposeOptions,
-    anchors: PatchAnchors<'_>,
+    anchors: AttachmentAnchors<'_>,
 ) -> Result<(Composition, UserPolicy), ComposeError> {
     let Contribution {
         vars,
-        patches,
+        attachments,
         packages,
         lifecycle_hooks,
     } = contribution;
@@ -1798,7 +1813,7 @@ pub(crate) fn compose_contribution(
     // policy can drop offending contributors before they're compared.
     // See `Conflict` for the per-domain rules.
     check_var_mismatches(gated_vars.iter(), |v| v.var().name(), |v| v.var().value())?;
-    // Patch sources and policy patterns expand against the resolved
+    // Attachment sources and policy patterns expand against the resolved
     // vars. Explicit `$VAR` references require an explicit
     // `SessionVar` — no env fallback. The two exceptions come from
     // `anchors` rather than the var set: the tilde prefix (`~/...`)
@@ -1807,7 +1822,7 @@ pub(crate) fn compose_contribution(
     //
     // `expansion_vars` carries pre-gated vars from an outer scope
     // (e.g. the client's wire contribution as seen by the daemon)
-    // so daemon-side patches can resolve `$VAR` / `~` against them.
+    // so daemon-side attachments can resolve `$VAR` / `~` against them.
     // They precede locally-gated vars in the lookup so the
     // user-side declaration wins on conflict.
     let combined_for_lookup: Vec<SessionVar> = expansion_vars
@@ -1815,27 +1830,27 @@ pub(crate) fn compose_contribution(
         .cloned()
         .chain(gated_vars.iter().cloned())
         .collect();
-    let (gated_patches, patches_policy) = gate_patches(
-        patches,
+    let (gated_attachments, patches_policy) = gate_patches(
+        attachments,
         patches_policy,
         hooks,
         options,
         &combined_for_lookup,
         anchors,
     )?;
-    check_patch_mismatches(
-        gated_patches.iter(),
-        |p| p.patch().destination(),
-        |p| p.patch().host_path().as_str(),
+    check_attachment_mismatches(
+        gated_attachments.iter(),
+        |p| p.attachment().destination(),
+        |p| p.attachment().host_path().as_str(),
     )?;
-    check_patch_prefix_collisions(gated_patches.iter(), |p| p.patch().destination())?;
+    check_attachment_prefix_collisions(gated_attachments.iter(), |p| p.attachment().destination())?;
     let final_policy = UserPolicy::empty()
         .with_vars(vars_policy)
         .with_patches(patches_policy)
         .with_hooks(hooks_policy);
     let composition = Composition {
         vars: gated_vars,
-        patches: gated_patches,
+        attachments: gated_attachments,
         packages,
         lifecycle_hooks,
         // Orientation never passes through the gate: it is control-plane
@@ -1856,7 +1871,7 @@ pub(crate) fn compose_contribution(
 pub(crate) struct PendingTransform {
     pub(crate) wire: WirePending,
     pub(crate) pending_vars: BTreeMap<PendingId, ProvenancedVar>,
-    pub(crate) pending_patches: BTreeMap<PendingId, ProvenancedPatch>,
+    pub(crate) pending_attachments: BTreeMap<PendingId, ProvenancedAttachment>,
     pub(crate) pending_hooks: BTreeMap<PendingId, ProvenancedHook>,
 }
 
@@ -1865,11 +1880,11 @@ pub(crate) struct PendingTransform {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct WirePending {
     pub(crate) vars: Vec<WirePendingVar>,
-    pub(crate) patches: Vec<WirePendingPatch>,
+    pub(crate) attachments: Vec<WirePendingAttachment>,
     pub(crate) lifecycle_hooks: Vec<WirePendingHook>,
 }
 
-/// Convert daemon-collected vars, patches, and lifecycle hooks into
+/// Convert daemon-collected vars, attachments, and lifecycle hooks into
 /// their wire pending shape plus a per-item [`PendingId`] stash.
 /// Pure: no policy consulted, no env touched.
 ///
@@ -1881,7 +1896,7 @@ pub(crate) struct WirePending {
 /// If a single domain holds more than `u32::MAX + 1` items.
 pub(crate) fn contribution_to_pending(
     vars: Vec<ProvenancedVar>,
-    patches: Vec<ProvenancedPatch>,
+    attachments: Vec<ProvenancedAttachment>,
     lifecycle_hooks: Vec<ProvenancedHook>,
 ) -> PendingTransform {
     let mut pending_vars: BTreeMap<PendingId, ProvenancedVar> = BTreeMap::new();
@@ -1908,21 +1923,21 @@ pub(crate) fn contribution_to_pending(
         pending_vars.insert(id, pv);
     }
 
-    let mut pending_patches: BTreeMap<PendingId, ProvenancedPatch> = BTreeMap::new();
-    let mut wire_patches: Vec<WirePendingPatch> = Vec::with_capacity(patches.len());
-    for (i, pp) in patches.into_iter().enumerate() {
-        let id = PendingId::new(u32::try_from(i).expect("pending patch index fits in u32"));
-        wire_patches.push(WirePendingPatch {
+    let mut pending_attachments: BTreeMap<PendingId, ProvenancedAttachment> = BTreeMap::new();
+    let mut wire_attachments: Vec<WirePendingAttachment> = Vec::with_capacity(attachments.len());
+    for (i, pp) in attachments.into_iter().enumerate() {
+        let id = PendingId::new(u32::try_from(i).expect("pending attachment index fits in u32"));
+        wire_attachments.push(WirePendingAttachment {
             id,
-            source_pattern: pp.patch().source().to_string(),
-            destination: pp.patch().dest().as_sandbox_path().clone(),
+            source_pattern: pp.attachment().source().to_string(),
+            destination: pp.attachment().dest().as_sandbox_path().clone(),
             description: None,
             source: pp.source().clone().into(),
         });
-        pending_patches.insert(id, pp);
+        pending_attachments.insert(id, pp);
     }
 
-    // Hooks are stashed by id like vars and patches, rather than
+    // Hooks are stashed by id like vars and attachments, rather than
     // shipped as a pass-through list. The daemon must be able to drop
     // the ones the client refuses, and it can only do that if each hook
     // has an id the verdict can name.
@@ -1941,11 +1956,11 @@ pub(crate) fn contribution_to_pending(
     PendingTransform {
         wire: WirePending {
             vars: wire_vars,
-            patches: wire_patches,
+            attachments: wire_attachments,
             lifecycle_hooks: wire_hooks,
         },
         pending_vars,
-        pending_patches,
+        pending_attachments,
         pending_hooks,
     }
 }

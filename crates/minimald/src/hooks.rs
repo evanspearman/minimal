@@ -925,7 +925,7 @@ mod tests {
         let wire = WireComposition {
             version: COMPOSITION_SNAPSHOT_VERSION,
             vars: Vec::new(),
-            patches: Vec::new(),
+            attachments: Vec::new(),
             packages: Vec::new(),
             lifecycle_hooks: hooks.into_iter().map(WireProvenancedHook::from).collect(),
             orientation: Default::default(),

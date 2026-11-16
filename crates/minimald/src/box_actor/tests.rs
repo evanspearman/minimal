@@ -2506,7 +2506,7 @@ fn only_uploaded_hook_scripts_gate_the_finalize() {
         Composition::try_from(WireComposition {
             version: COMPOSITION_SNAPSHOT_VERSION,
             vars: Vec::new(),
-            patches: Vec::new(),
+            attachments: Vec::new(),
             packages: Vec::new(),
             lifecycle_hooks: vec![WireProvenancedHook::from(hook)],
             orientation: Default::default(),
@@ -3243,36 +3243,36 @@ async fn a_session_with_no_destroy_hook_runs_nothing_on_destroy() {
     assert!(!record_exists(&mut client, session_id).await);
 }
 
-/// The staged patch's permission bits reach the session home. This
-/// is the last hop of the chain that keeps a patched script
+/// The staged attachment's permission bits reach the session home. This
+/// is the last hop of the chain that keeps a copied script
 /// executable — the uploader puts the source's mode on the tar
 /// header, the unpacker applies it to the staged file, and this
 /// copy has to carry it the rest of the way.
 ///
-/// Pins the `fs::copy` in [`super::materialize_patches_into_home`]:
+/// Pins the `fs::copy` in [`super::materialize_attachments_into_home`]:
 /// a hand-rolled read-then-write there would pass this test's
 /// content assertions while silently flattening every mode.
 #[tokio::test]
-async fn materializing_patches_carries_their_modes_into_the_home() {
+async fn materializing_attachments_carries_their_modes_into_the_home() {
     use std::os::unix::fs::PermissionsExt as _;
 
     use boxes::core::compose::Composition;
-    use boxes::wire::primitives::{WireResolvedPatch, WireSessionPatch, WireSource};
+    use boxes::wire::primitives::{WireResolvedAttachment, WireSessionAttachment, WireSource};
     use boxes::wire::request::{COMPOSITION_SNAPSHOT_VERSION, WireComposition};
     use paths::{DaemonAbsPath, HostAbsPath, SandboxRelPath};
 
     let tmp = tempfile::tempdir().unwrap();
     let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
-    let patches_dir = root.join("patches");
+    let attachments_dir = root.join("attachments");
     let home_dir = root.join("home");
-    std::fs::create_dir_all(patches_dir.join(".local/bin").as_std_path()).unwrap();
+    std::fs::create_dir_all(attachments_dir.join(".local/bin").as_std_path()).unwrap();
     std::fs::create_dir_all(home_dir.as_std_path()).unwrap();
 
-    // Two staged patches: one executable, one private. Modes are set
+    // Two staged attachments: one executable, one private. Modes are set
     // on the staged files the way the unpacker sets them.
     let staged = [(".local/bin/tool", 0o755), (".config/secret.toml", 0o600)];
     for (rel, mode) in staged {
-        let path = patches_dir.join(rel);
+        let path = attachments_dir.join(rel);
         std::fs::create_dir_all(path.parent().unwrap().as_std_path()).unwrap();
         std::fs::write(path.as_std_path(), b"x").unwrap();
         std::fs::set_permissions(path.as_std_path(), std::fs::Permissions::from_mode(mode))
@@ -3282,14 +3282,14 @@ async fn materializing_patches_carries_their_modes_into_the_home() {
     let composition = Composition::try_from(WireComposition {
         version: COMPOSITION_SNAPSHOT_VERSION,
         vars: Vec::new(),
-        patches: staged
+        attachments: staged
             .iter()
-            .map(|(rel, _)| WireSessionPatch {
-                patch: WireResolvedPatch {
+            .map(|(rel, _)| WireSessionAttachment {
+                attachment: WireResolvedAttachment {
                     // The host path is not read here — the copy
                     // sources from the staged tree, keyed by
                     // destination — but the wire type requires one.
-                    host_path: HostAbsPath::try_new(patches_dir.join(rel)).unwrap(),
+                    host_path: HostAbsPath::try_new(attachments_dir.join(rel)).unwrap(),
                     destination: SandboxRelPath::try_new(*rel).unwrap(),
                 },
                 source: WireSource::UserLoadout {
@@ -3301,15 +3301,15 @@ async fn materializing_patches_carries_their_modes_into_the_home() {
         lifecycle_hooks: Vec::new(),
         orientation: Default::default(),
     })
-    .expect("a patch-only composition converts back");
+    .expect("an attachment-only composition converts back");
 
-    super::materialize_patches_into_home(
-        &DaemonAbsPath::try_new(patches_dir.clone()).unwrap(),
+    super::materialize_attachments_into_home(
+        &DaemonAbsPath::try_new(attachments_dir.clone()).unwrap(),
         &DaemonAbsPath::try_new(home_dir.clone()).unwrap(),
         &composition,
     )
     .await
-    .expect("materializing staged patches");
+    .expect("materializing staged attachments");
 
     for (rel, mode) in staged {
         let meta = std::fs::metadata(home_dir.join(rel).as_std_path())

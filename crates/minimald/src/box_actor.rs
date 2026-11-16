@@ -78,15 +78,15 @@ pub struct BoxPaths {
     pub working: DaemonAbsPath,
     pub cache: DaemonAbsPath,
     pub home: DaemonAbsPath,
-    /// Where the daemon stages client-uploaded composition patches
-    /// (`WorkspacePatchesTarZst` unpacks under this dir, keyed by
-    /// the patch's sandbox-home-relative destination). Directory
+    /// Where the daemon stages client-uploaded composition attachments
+    /// (`WorkspaceAttachmentsTarZst` unpacks under this dir, keyed by
+    /// the attachment's sandbox-home-relative destination). Directory
     /// may not exist yet — it's created on the first successful
     /// upload.
-    pub patches: DaemonAbsPath,
+    pub attachments: DaemonAbsPath,
     /// Where the daemon stages client-uploaded external lifecycle-hook
     /// scripts (`WorkspaceHookScriptsTarZst` unpacks under this dir,
-    /// keyed by the script's staged path). Like `patches`, it may not
+    /// keyed by the script's staged path). Like `attachments`, it may not
     /// exist yet — a session whose hooks are all inline never uploads
     /// anything here.
     pub hooks: DaemonAbsPath,
@@ -180,7 +180,7 @@ enum BoxInner {
         /// falls back to its baseline set in that case.
         ///
         /// The launcher currently consumes only the composition's packages
-        /// and vars. Patches (need file-upload plumbing) and lifecycle hooks
+        /// and vars. Attachments (need file-upload plumbing) and lifecycle hooks
         /// (need in-sandbox exec plumbing) are held here but not yet applied.
         composition: Option<Arc<Composition>>,
         /// The running host, if minted, paired with the `JoinHandle` of its
@@ -395,7 +395,7 @@ enum BoxMessage {
         )>,
     ),
     /// Promote a `Materializing` session to `Active`, gating on the
-    /// patches-ready marker under `<workspace>/patches/`. Idempotent
+    /// attachments-ready marker under `<workspace>/attachments/`. Idempotent
     /// on an already-`Active` session; refused with `InvalidInput`
     /// on `Pending` (configure the loadout first).
     Finalize(oneshot::Sender<Result<minimald_rpc::FinalizeSessionResponse, std::io::Error>>),
@@ -461,9 +461,9 @@ enum BoxMessage {
     /// the persisted snapshot: `BoxActor::run` loads it at spawn, so this
     /// answers for an actor brought up from disk after a restart.
     GetComposition(oneshot::Sender<Option<Arc<Composition>>>),
-    /// Hand back an `Arc` clone of this session's patches-upload lock, see
-    /// [`BoxActor::patches_upload_lock`].
-    GetPatchesUploadLock(oneshot::Sender<Arc<Mutex<()>>>),
+    /// Hand back an `Arc` clone of this session's attachments-upload lock, see
+    /// [`BoxActor::attachments_upload_lock`].
+    GetAttachmentsUploadLock(oneshot::Sender<Arc<Mutex<()>>>),
     /// Hand back an `Arc` clone of this session's hook-scripts-upload lock,
     /// see [`BoxActor::hook_scripts_upload_lock`].
     GetHookScriptsUploadLock(oneshot::Sender<Arc<Mutex<()>>>),
@@ -688,13 +688,13 @@ pub struct BoxActor {
     /// reports the changes made before that exit. See [`WorkspaceBaseline`].
     workspace_baseline: WorkspaceBaseline,
 
-    /// Serializes `WorkspacePatchesTarZst` uploads for this session: two
-    /// concurrent uploads would race on the single `<workspace>/patches/`
+    /// Serializes `WorkspaceAttachmentsTarZst` uploads for this session: two
+    /// concurrent uploads would race on the single `<workspace>/attachments/`
     /// tree and step on each other.
-    patches_upload_lock: Arc<Mutex<()>>,
+    attachments_upload_lock: Arc<Mutex<()>>,
 
     /// The same, for `WorkspaceHookScriptsTarZst` uploads and the
-    /// `<workspace>/hooks/` tree. A separate lock from the patches one:
+    /// `<workspace>/hooks/` tree. A separate lock from the attachments one:
     /// the two uploads target different trees and run back-to-back, so
     /// sharing a lock would serialize them against each other for no
     /// reason.
@@ -879,7 +879,7 @@ impl BoxActor {
             tracker: OpTracker::new_root(),
             inner,
             workspace_baseline: WorkspaceBaseline::Unarmed,
-            patches_upload_lock: Arc::new(Mutex::new(())),
+            attachments_upload_lock: Arc::new(Mutex::new(())),
             hook_scripts_upload_lock: Arc::new(Mutex::new(())),
             workspace_uploads_in_flight: 0,
             creator,
@@ -997,10 +997,10 @@ impl BoxActor {
             //     `configure_loadout` accept a fresh contribution
             //     while the on-disk status stays `Materializing`,
             //     drifting the two into inconsistency.
-            //   * A stale `.patches_ready` from the prior upload
+            //   * A stale `.attachments_ready` from the prior upload
             //     could then satisfy the *new* composition's
             //     finalize marker check, materializing the wrong
-            //     patches into the sandbox home.
+            //     attachments into the sandbox home.
             //   * `BoxInner::Active { composition: None }`
             //     would let attach reach a shell against a session
             //     that never actually finished materializing.
@@ -2731,8 +2731,8 @@ impl BoxActor {
                     return ControlFlow::Break(Teardown::SelfInitiated);
                 }
             }
-            BoxMessage::GetPatchesUploadLock(r) => {
-                let _ = r.send(Arc::clone(&self.patches_upload_lock));
+            BoxMessage::GetAttachmentsUploadLock(r) => {
+                let _ = r.send(Arc::clone(&self.attachments_upload_lock));
             }
             BoxMessage::GetHookScriptsUploadLock(r) => {
                 let _ = r.send(Arc::clone(&self.hook_scripts_upload_lock));
@@ -2885,7 +2885,7 @@ impl BoxActor {
             working: obj.workspace_path(),
             cache: obj.cache_path(),
             home: obj.home_path(),
-            patches: obj.patches_path(),
+            attachments: obj.attachments_path(),
             hooks: obj.hooks_path(),
         }
     }

@@ -105,7 +105,7 @@ impl BoxActor {
                 // reject it — see [`LaunchPhase::Activating`]. Everything
                 // that gate protects has already been established by the
                 // time finalize gets here: the session is composed (checked
-                // before any of this runs) and its patches are materialized
+                // before any of this runs) and its attachments are materialized
                 // into the home dir.
                 LaunchPhase::Activating => self.build_context(true).await,
             }

@@ -1279,7 +1279,7 @@ fn configure_loadout_response_pending_round_trips() {
         response: ContributionResponse {
             session_id: id,
             vars: vec![],
-            patches: vec![],
+            attachments: vec![],
             lifecycle_hooks: vec![],
         },
     };

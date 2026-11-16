@@ -474,7 +474,7 @@ pub async fn rename(host: &mut Host, id: SessionId, new_name: &str) -> Result<()
 
 /// The full activate flow behind the create form: create the record, upload
 /// the project tree and the loadouts' staged hook scripts, send the
-/// contribution the caller composed, upload the composition's patch files,
+/// contribution the caller composed, upload the composition's attachment files,
 /// and finalize — so the new session comes up `Active`, attachable, and
 /// restart-persistent rather than dying as an unresumable `Pending` stub on
 /// the next daemon restart.
@@ -613,8 +613,8 @@ pub async fn activate(
         // activate` uses: they land in the final composition of a
         // `Materialized` response (the only one the dashboard accepts), so
         // the client is authoritative for them.
-        let mut patches = minimal_client::contribution_patch_uploads(&inputs.contribution);
-        minimal_client::dedup_patch_uploads(&mut patches);
+        let mut attachments = minimal_client::contribution_attachment_uploads(&inputs.contribution);
+        minimal_client::dedup_attachment_uploads(&mut attachments);
         let configured = client
             .oneshot_rpc::<minimald_rpc::ConfigureLoadout>(minimald_rpc::ConfigureLoadoutRequest {
                 session_id: id,
@@ -632,15 +632,15 @@ pub async fn activate(
             }
             Errorable::Err { error } => anyhow::bail!("{error}"),
         }
-        // The composition's patches must arrive between `ConfigureLoadout`
+        // The composition's attachments must arrive between `ConfigureLoadout`
         // and `FinalizeSession`: the daemon's finalize gate refuses a
-        // composition whose patch upload never completed. An empty list is
+        // composition whose attachment upload never completed. An empty list is
         // a no-op. Quiet: the dashboard owns the screen, and a progress bar
         // would corrupt it.
         client
-            .upload_patches_quiet(id, &patches)
+            .upload_attachments_quiet(id, &attachments)
             .await
-            .context("uploading composition patches")?;
+            .context("uploading attachments")?;
         match client
             .oneshot_rpc_with_hook_budget::<minimald_rpc::FinalizeSession>(
                 minimald_rpc::FinalizeSessionRequest {

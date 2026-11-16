@@ -1,4 +1,4 @@
-//! User-level loadout: packages, variables, patches, and lifecycle
+//! User-level loadout: packages, variables, attachments, and lifecycle
 //! hooks the user wants in their session.
 //!
 //! # Example: helix + zellij with the user's dotfiles
@@ -55,7 +55,9 @@ use std::collections::BTreeMap;
 use nutype::nutype;
 
 use crate::core::lifecyclehook::LifecycleHook;
-use crate::core::primitives::{LenientVarEntry, Patch, Patches, StrictVarName, VarName, VarValue};
+use crate::core::primitives::{
+    Attachment, Attachments, LenientVarEntry, StrictVarName, VarName, VarValue,
+};
 
 /// A loadout's identifier — trimmed, and usable as a single path
 /// component that stays put: non-empty, free of path separators and
@@ -115,20 +117,19 @@ pub struct LoadoutFile {
     /// rare case where a non-POSIX name is necessary.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     vars_lenient: Vec<LenientVarEntry>,
-    /// Attachments contributed by this loadout. Written `attachments`;
-    /// the old name `patches` is still read.
+    /// Attachments contributed by this loadout. The old name `patches` is
+    /// still read.
     #[serde(
         default,
-        rename = "attachments",
         alias = "patches",
-        skip_serializing_if = "Patches::is_empty"
+        skip_serializing_if = "Attachments::is_empty"
     )]
-    patches: Patches,
+    attachments: Attachments,
     /// Scripts run at session-level transition points.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     lifecycle_hooks: Vec<LifecycleHook>,
     /// Override the composer's default follow-symlinks behavior for
-    /// this loadout's patches. `None` falls through to
+    /// this loadout's attachments. `None` falls through to
     /// `ComposeOptions::follow_symlinks`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     follow_symlinks: Option<bool>,
@@ -257,10 +258,10 @@ impl Loadout {
         new
     }
 
-    /// Append a patch.
+    /// Append an attachment.
     #[must_use]
-    pub fn with_patch(mut self, patch: Patch) -> Self {
-        self.file.patches.push(patch);
+    pub fn with_attachment(mut self, attachment: Attachment) -> Self {
+        self.file.attachments.push(attachment);
         self
     }
 
@@ -288,7 +289,7 @@ impl Loadout {
     }
 
     /// Override the composer's default follow-symlinks behavior for
-    /// this loadout's patches.
+    /// this loadout's attachments.
     #[must_use]
     pub fn with_follow_symlinks(mut self, v: bool) -> Self {
         self.file.follow_symlinks = Some(v);
@@ -355,10 +356,10 @@ impl Loadout {
         strict.chain(lenient)
     }
 
-    /// Patches contributed by this loadout.
+    /// Attachments contributed by this loadout.
     #[must_use]
-    pub fn patches(&self) -> &Patches {
-        &self.file.patches
+    pub fn attachments(&self) -> &Attachments {
+        &self.file.attachments
     }
 
     /// Lifecycle hooks attached to this loadout.
@@ -440,7 +441,7 @@ impl crate::core::compose::Composable for Loadout {
             }
         }
 
-        // Packages / patches / hooks go through the shared
+        // Packages / attachments / hooks go through the shared
         // `contribute_primitives` helper — it doesn't touch vars
         // when the input is empty. Pass an empty vars map so the
         // helper's var loop is a no-op.
@@ -449,19 +450,19 @@ impl crate::core::compose::Composable for Loadout {
             self.file.packages,
             std::collections::BTreeMap::new(),
             Vec::new(),
-            self.file.patches,
+            self.file.attachments,
             self.file.lifecycle_hooks,
             env,
         )?;
         contribution.merge(std::mem::take(&mut rest)).ok();
 
         // Stamp the loadout's per-source `follow_symlinks` override
-        // onto every patch it contributes. `None` is a no-op — patches
+        // onto every attachment it contributes. `None` is a no-op — attachments
         // inherit `ComposeOptions::follow_symlinks` at expand time.
-        // `Some(v)` overrides the default for this loadout's patches
+        // `Some(v)` overrides the default for this loadout's attachments
         // specifically.
         if let Some(follow) = self.file.follow_symlinks {
-            contribution.set_follow_symlinks_on_patches(Some(follow));
+            contribution.set_follow_symlinks_on_attachments(Some(follow));
         }
         Ok(contribution)
     }
@@ -546,7 +547,7 @@ fn resolve_var_declaration(
 mod tests {
     use super::*;
     use crate::core::lifecyclehook::HookScript;
-    use crate::core::primitives::{LenientVarName, PatchDest};
+    use crate::core::primitives::{AttachmentDest, LenientVarName};
 
     // BOX-172: the loader keeps a `loadout_mode` key, whatever its value,
     // so the expansion can refuse it rather than drop it.
@@ -736,7 +737,7 @@ mod tests {
             l.packages()
         );
         assert_eq!(l.all_vars().count(), 0);
-        assert!(l.patches().is_empty());
+        assert!(l.attachments().is_empty());
         assert!(
             l.lifecycle_hooks().is_empty(),
             "expected empty, got {:?}",
@@ -768,7 +769,7 @@ mod tests {
             .with_on_activate(HookScript::inline("echo hi"))
             .build()
             .unwrap();
-        let patch = Patch::new("a", PatchDest::try_new("a").unwrap());
+        let attachment = Attachment::new("a", AttachmentDest::try_new("a").unwrap());
 
         let l = Loadout::new(LoadoutName::try_new("Test").unwrap())
             .with_package("helix")
@@ -780,13 +781,13 @@ mod tests {
             .with_var_lenient(
                 LenientVarEntry::try_new("weird-thing", VarValue::specified("x")).unwrap(),
             )
-            .with_patch(patch)
+            .with_attachment(attachment)
             .with_lifecycle_hook(hook);
 
         assert_eq!(l.packages(), &["helix", "zellij"]);
         assert_eq!(l.vars().len(), 1);
         assert_eq!(l.vars_lenient().len(), 1);
-        assert_eq!(l.patches().len(), 1);
+        assert_eq!(l.attachments().len(), 1);
         assert_eq!(l.lifecycle_hooks().len(), 1);
     }
 
@@ -833,15 +834,15 @@ mod tests {
         assert_eq!(parsed.name().as_ref(), "dev");
         assert_eq!(parsed.description(), Some("Editor + terminal multiplexer"));
         assert_eq!(parsed.packages(), &["helix", "zellij"]);
-        // Row 2 (`source = ["b1", "b2"]`) fans out into two patches, so the
-        // three rows yield four Patch entries.
-        assert_eq!(parsed.patches().len(), 4);
+        // Row 2 (`source = ["b1", "b2"]`) fans out into two attachments, so the
+        // three rows yield four Attachment entries.
+        assert_eq!(parsed.attachments().len(), 4);
         assert_eq!(parsed.vars().len(), 2);
         assert_eq!(parsed.vars_lenient().len(), 1);
         assert_eq!(parsed.lifecycle_hooks().len(), 1);
 
         // The original-vs-parsed equality check would require Loadout: Eq,
-        // which it isn't (Patches / VarValue / LifecycleHook all skip it).
+        // which it isn't (Attachments / VarValue / LifecycleHook all skip it).
         // Re-serialize and compare strings instead — same effect, no derive
         // creep.
         let reserialized = toml::to_string(&parsed).unwrap();
@@ -857,7 +858,7 @@ mod tests {
             patches = [{ dest = "etc/foo", source = "./foo" }]
         "#;
         let loadout: Loadout = toml::from_str(src).unwrap();
-        assert_eq!(loadout.patches().len(), 1);
+        assert_eq!(loadout.attachments().len(), 1);
         let table = toml::Table::try_from(&loadout).unwrap();
         assert!(table.contains_key("attachments"), "{table:?}");
         assert!(!table.contains_key("patches"), "{table:?}");

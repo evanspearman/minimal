@@ -1436,7 +1436,7 @@ fn screen_snapshot_drops_wide_continuation_cells() {
 fn hvp_positions_like_cup() {
     // btop positions exclusively with HVP (`f`); it must behave like CUP
     // (gominimal/minimal#1197). Guards the gominimal/vt100-rust fork's
-    // patch against being dropped.
+    // attachment against being dropped.
     let mut parser = vt100::Parser::new(5, 10, 0);
     parser.process("\u{1b}[3;7fX\u{1b}[fY".as_bytes());
     assert_eq!(parser.screen().cell(2, 6).unwrap().contents(), "X");
@@ -1517,7 +1517,7 @@ async fn get_attrs_tracks_title_and_io_times() {
                 working: DaemonAbsPath::root(),
                 cache: DaemonAbsPath::root(),
                 home: DaemonAbsPath::root(),
-                patches: DaemonAbsPath::root(),
+                attachments: DaemonAbsPath::root(),
                 hooks: DaemonAbsPath::root(),
             },
             sz: DEFAULT_SIZE,
@@ -1596,7 +1596,7 @@ async fn kill_tears_down_host_and_reaps_process() {
                 working: DaemonAbsPath::root(),
                 cache: DaemonAbsPath::root(),
                 home: DaemonAbsPath::root(),
-                patches: DaemonAbsPath::root(),
+                attachments: DaemonAbsPath::root(),
                 hooks: DaemonAbsPath::root(),
             },
             sz: DEFAULT_SIZE,
@@ -1687,7 +1687,7 @@ fn test_paths() -> BoxPaths {
         working: DaemonAbsPath::root(),
         cache: DaemonAbsPath::root(),
         home: DaemonAbsPath::root(),
-        patches: DaemonAbsPath::root(),
+        attachments: DaemonAbsPath::root(),
         hooks: DaemonAbsPath::root(),
     }
 }
@@ -1924,7 +1924,7 @@ fn bare_composition() -> Arc<boxes::core::compose::Composition> {
         boxes::core::compose::Composition::try_from(WireComposition {
             version: COMPOSITION_SNAPSHOT_VERSION,
             vars: Vec::new(),
-            patches: Vec::new(),
+            attachments: Vec::new(),
             packages: Vec::new(),
             lifecycle_hooks: Vec::new(),
             orientation: Default::default(),
@@ -8064,7 +8064,7 @@ impl StoredBox {
             working: object.workspace_path(),
             cache: object.cache_path(),
             home: object.home_path(),
-            patches: object.patches_path(),
+            attachments: object.attachments_path(),
             hooks: object.hooks_path(),
         };
         for dir in [&paths.working, &paths.cache, &paths.home] {
@@ -8087,7 +8087,7 @@ impl StoredBox {
                 working: self.paths.working.clone(),
                 cache: self.paths.cache.clone(),
                 home: self.paths.home.clone(),
-                patches: self.paths.patches.clone(),
+                attachments: self.paths.attachments.clone(),
                 hooks: self.paths.hooks.clone(),
             },
             sz: DEFAULT_SIZE,

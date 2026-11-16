@@ -94,16 +94,19 @@ impl BoxHandle {
         })
     }
 
-    /// Handle to the per-session patches-upload lock, owned by the session
+    /// Handle to the per-session attachments-upload lock, owned by the session
     /// actor.
     ///
-    /// Workspace patches are accumulated in a fixed per-session directory,
-    /// so this lock is used to serialize `WorkspacePatchesTarZst` RPCs so
+    /// Workspace attachments are accumulated in a fixed per-session directory,
+    /// so this lock is used to serialize `WorkspaceAttachmentsTarZst` RPCs so
     /// they dont race and stomp each other.
-    pub async fn patches_upload_lock(&self) -> Result<Arc<Mutex<()>>, std::io::Error> {
+    pub async fn attachments_upload_lock(&self) -> Result<Arc<Mutex<()>>, std::io::Error> {
         let (send, recv) = oneshot::channel();
         // Ignore send errors - the recv will also fail.
-        let _ = self.0.send(BoxMessage::GetPatchesUploadLock(send)).await;
+        let _ = self
+            .0
+            .send(BoxMessage::GetAttachmentsUploadLock(send))
+            .await;
         recv.await.map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::NotConnected, "session actor is gone")
         })
@@ -111,7 +114,7 @@ impl BoxHandle {
 
     /// Handle to the per-session hook-scripts-upload lock, owned by the
     /// session actor. Serializes `WorkspaceHookScriptsTarZst` RPCs the
-    /// same way [`Self::patches_upload_lock`] serializes patch uploads.
+    /// same way [`Self::attachments_upload_lock`] serializes attachment uploads.
     pub async fn hook_scripts_upload_lock(&self) -> Result<Arc<Mutex<()>>, std::io::Error> {
         let (send, recv) = oneshot::channel();
         // Ignore send errors - the recv will also fail.
@@ -590,7 +593,7 @@ impl BoxHandle {
     /// Submit the client's contribution verdict against a `Draft` session.
     /// On success the actor promotes its record from `Pending` to
     /// `Materializing` and replies with [`BoxStep::Materialized`]; the
-    /// client still has to upload patches and call `FinalizeSession`
+    /// client still has to upload attachments and call `FinalizeSession`
     /// before the session becomes attachable. Structured failures
     /// (wrong state, an unresumable verdict) come back as
     /// [`BoxStep::Fault`]. A dead actor maps to `NotConnected`
@@ -614,8 +617,8 @@ impl BoxHandle {
     }
 
     /// Promote a `Materializing` session to `Active`, gating on the
-    /// patches-ready marker having been written by a completed
-    /// `WorkspacePatchesTarZst` upload. Idempotent on already-Active
+    /// attachments-ready marker having been written by a completed
+    /// `WorkspaceAttachmentsTarZst` upload. Idempotent on already-Active
     /// sessions. See [`BoxActor::finalize`] for the state-machine
     /// contract.
     pub(crate) async fn finalize(

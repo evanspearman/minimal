@@ -205,7 +205,7 @@ pub(crate) struct ActiveLoadouts {
     /// Travels with the loadouts rather than being recomputed by each
     /// consumer, so everything anchored at a loadout's own directory
     /// (`<dir>/<name>/`) — its external hook scripts, and
-    /// `$LOADOUT_ROOT` in its patch sources — resolves against the
+    /// `$LOADOUT_ROOT` in its attachment sources — resolves against the
     /// directory the files actually came from.
     pub(crate) loadouts_dir: paths::HostAbsPath,
     /// True when the zero-config fallback used the built-in `default`
@@ -363,7 +363,7 @@ fn user_default_exists(loadouts_dir: &paths::HostAbsPath) -> Result<bool, anyhow
 ///
 /// UTF-8 is required rather than best-effort: the directory is joined
 /// with a loadout's name to anchor that loadout's own files (hook
-/// scripts, `$LOADOUT_ROOT` patch sources), and those anchors travel
+/// scripts, `$LOADOUT_ROOT` attachment sources), and those anchors travel
 /// through UTF-8 path types all the way to the daemon.
 ///
 /// A **relative** `--config-dir` is anchored at the process working
@@ -592,7 +592,7 @@ pub(crate) fn activate_hook_budget(
 /// [`boxes::wire::request::WireContribution`] under the user's
 /// [`UserPolicy`] loaded from `user_policy.toml`. User-origin items
 /// auto-pass the allow step but the policy's `deny` / `ignore` rules
-/// still apply, so a loadout patch matching a deny rule fails the
+/// still apply, so a loadout attachment matching a deny rule fails the
 /// composition here rather than at the daemon.
 ///
 /// The contribution also carries the first-prompt orientation as a
@@ -636,8 +636,8 @@ pub(crate) fn compose_user_contribution(
 
     let mut composer = boxes::client::composer::UserComposer::new()
         .with_orientation(boxes::core::compose::Orientation { loadouts_display })
-        // Anchors `$LOADOUT_ROOT` in the loadouts' patch sources at the
-        // directory they were read from, so a loadout can patch in files
+        // Anchors `$LOADOUT_ROOT` in the loadouts' attachment sources at the
+        // directory they were read from, so a loadout can copy in files
         // shipped beside it without naming an absolute config path.
         .with_loadouts_dir(active.loadouts_dir);
     composer
@@ -963,10 +963,10 @@ impl LoadoutRow {
             name: entry.name.clone(),
             desc: loadout.description().unwrap_or("").to_string(),
             counts: format!(
-                "{} pkg / {} var / {} patch",
+                "{} pkg / {} var / {} attachment",
                 loadout.packages().len(),
                 loadout.vars().len() + loadout.vars_lenient().len(),
-                loadout.patches().iter().count(),
+                loadout.attachments().iter().count(),
             ),
         }
     }
@@ -981,10 +981,10 @@ impl LoadoutRow {
             name: format!("{BUILTIN_DEFAULT_NAME} (built-in)"),
             desc: l.description().unwrap_or("").to_string(),
             counts: format!(
-                "{} pkg / {} var / {} patch",
+                "{} pkg / {} var / {} attachment",
                 l.packages().len(),
                 l.vars().len() + l.vars_lenient().len(),
-                l.patches().iter().count(),
+                l.attachments().iter().count(),
             ),
         }
     }
@@ -1030,7 +1030,7 @@ mod tests {
     }
 
     /// The directory these tests pretend their hand-built loadouts were
-    /// read from. Nothing here declares a `$LOADOUT_ROOT` patch source
+    /// read from. Nothing here declares a `$LOADOUT_ROOT` attachment source
     /// or an external hook script, so the path only has to be
     /// well-formed — it is never touched on disk.
     fn stub_loadouts_dir() -> paths::HostAbsPath {
@@ -1284,7 +1284,7 @@ on_activate = { type = "inline", value = "sleep 90", timeout = 90 }
             "built-in default contributes no packages"
         );
         assert!(l.lifecycle_hooks().is_empty());
-        assert!(l.patches().is_empty());
+        assert!(l.attachments().is_empty());
 
         let vars: Vec<String> = l.all_vars().map(|(n, _)| n.as_str().to_owned()).collect();
         assert_eq!(vars.len(), 3);

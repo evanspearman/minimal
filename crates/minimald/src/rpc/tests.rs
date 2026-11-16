@@ -361,13 +361,13 @@ async fn counting_reader_tallies_every_byte_pulled_through() {
     assert_eq!(count.load(Ordering::Relaxed), payload.len() as u64);
 }
 
-/// `WorkspacePatchesTarZst` unpacks each entry under
-/// `<workspace>/patches/<archive-path>` and drops the ready
+/// `WorkspaceAttachmentsTarZst` unpacks each entry under
+/// `<workspace>/attachments/<archive-path>` and drops the ready
 /// marker on success. Guards the write ordering
 /// (staging-dir → atomic rename → marker) that FinalizeSession
 /// depends on.
 #[tokio::test]
-async fn stream_workspace_patches_unpacks_and_writes_marker() {
+async fn stream_workspace_attachments_unpacks_and_writes_marker() {
     let server = TestServer::new().await;
     let mut client = server.connect().await;
     let session_id = fresh_session(&mut client).await;
@@ -380,7 +380,7 @@ async fn stream_workspace_patches_unpacks_and_writes_marker() {
 
     let channel = client
         .open_subsystem(
-            STREAM_WORKSPACE_PATCHES,
+            STREAM_WORKSPACE_ATTACHMENTS,
             &[(MINIMAL_SESSION_ID_ENV, &session_id.to_string())],
         )
         .await;
@@ -397,30 +397,67 @@ async fn stream_workspace_patches_unpacks_and_writes_marker() {
         .unwrap()
         .expect("session should be retrievable");
     let paths = handle.paths().await.unwrap();
-    let patches = paths.patches.as_utf8_path();
+    let attachments = paths.attachments.as_utf8_path();
 
     assert_eq!(
-        tokio::fs::read(patches.join(".config/helix/config.toml"))
+        tokio::fs::read(attachments.join(".config/helix/config.toml"))
             .await
             .unwrap(),
         b"theme = 'nord'\n",
     );
     assert_eq!(
-        tokio::fs::read(patches.join(".config/other.toml"))
+        tokio::fs::read(attachments.join(".config/other.toml"))
             .await
             .unwrap(),
         b"key = 'value'\n",
     );
     assert!(
-        tokio::fs::try_exists(patches.join(PATCHES_READY_MARKER))
+        tokio::fs::try_exists(attachments.join(ATTACHMENTS_READY_MARKER))
             .await
             .unwrap(),
-        "patches-ready marker must be written on successful unpack",
+        "attachments-ready marker must be written on successful unpack",
+    );
+}
+
+/// A `min` of an earlier release uploads under the stream's old name,
+/// `WorkspacePatchesTarZst`. The daemon serves it the same way.
+#[tokio::test]
+async fn stream_workspace_attachments_old_name_is_served() {
+    let server = TestServer::new().await;
+    let mut client = server.connect().await;
+    let session_id = fresh_session(&mut client).await;
+
+    let payload = tar_zst(&[(".config/other.toml", b"key = 'value'\n")]).await;
+
+    let channel = client
+        .open_subsystem(
+            STREAM_WORKSPACE_ATTACHMENTS_OLD,
+            &[(MINIMAL_SESSION_ID_ENV, &session_id.to_string())],
+        )
+        .await;
+    let mut stream = channel.into_stream();
+    stream.write_all(&payload).await.unwrap();
+    stream.shutdown().await.unwrap();
+    let mut trailing = Vec::new();
+    stream.read_to_end(&mut trailing).await.unwrap();
+
+    let mngr = server.state.sessions_manager().await;
+    let handle = mngr
+        .get_session(BoxKeyPredicate::Id(session_id))
+        .await
+        .unwrap()
+        .expect("session should be retrievable");
+    let attachments = handle.paths().await.unwrap().attachments;
+    assert_eq!(
+        tokio::fs::read(attachments.as_utf8_path().join(".config/other.toml"))
+            .await
+            .unwrap(),
+        b"key = 'value'\n",
     );
 }
 
 /// Build a tar+zstd archive whose entries carry the modes given,
-/// rather than `tar_zst`'s uniform `0o644` — the shape the patches
+/// rather than `tar_zst`'s uniform `0o644` — the shape the attachments
 /// uploader produces once it stopped flattening the source's mode.
 async fn tar_zst_with_modes(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
     let mut tar = async_tar::Builder::new(Vec::new());
@@ -437,8 +474,8 @@ async fn tar_zst_with_modes(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
     encoder.into_inner()
 }
 
-/// An entry's permission bits reach the staged file, so a patched
-/// script stays executable and a patched secret stays private. The
+/// An entry's permission bits reach the staged file, so a copied
+/// script stays executable and a copied secret stays private. The
 /// `0o600` case is the one that proves the mode is applied
 /// explicitly rather than left to the daemon's umask, which would
 /// have produced `0o644` from the same header.
@@ -448,7 +485,7 @@ async fn tar_zst_with_modes(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
 /// in a session's tree. (`async_tar::Archive::unpack`, which
 /// handles the workspace stream, drops it for the same reason.)
 #[tokio::test]
-async fn stream_workspace_patches_preserves_entry_modes() {
+async fn stream_workspace_attachments_preserves_entry_modes() {
     use std::os::unix::fs::PermissionsExt as _;
 
     let server = TestServer::new().await;
@@ -464,7 +501,7 @@ async fn stream_workspace_patches_preserves_entry_modes() {
 
     let channel = client
         .open_subsystem(
-            STREAM_WORKSPACE_PATCHES,
+            STREAM_WORKSPACE_ATTACHMENTS,
             &[(MINIMAL_SESSION_ID_ENV, &session_id.to_string())],
         )
         .await;
@@ -481,12 +518,12 @@ async fn stream_workspace_patches_preserves_entry_modes() {
         .unwrap()
         .expect("session should be retrievable");
     let paths = handle.paths().await.unwrap();
-    let patches = paths.patches.as_utf8_path();
+    let attachments = paths.attachments.as_utf8_path();
 
     let mode_of = async |rel: &str| {
-        tokio::fs::metadata(patches.join(rel))
+        tokio::fs::metadata(attachments.join(rel))
             .await
-            .unwrap_or_else(|e| panic!("staged patch `{rel}` should exist: {e}"))
+            .unwrap_or_else(|e| panic!("staged attachment `{rel}` should exist: {e}"))
             .permissions()
             .mode()
             & 0o7777
@@ -588,7 +625,7 @@ async fn upload_and_collect_stderr(
     String::from_utf8_lossy(&stderr).into_owned()
 }
 
-/// Resolve a session's staged-patches and staged-hooks dirs.
+/// Resolve a session's staged-attachments and staged-hooks dirs.
 async fn staged_dirs(
     server: &TestServer,
     session_id: SessionId,
@@ -601,7 +638,7 @@ async fn staged_dirs(
         .expect("session should be retrievable");
     let paths = handle.paths().await.unwrap();
     (
-        paths.patches.as_utf8_path().to_owned(),
+        paths.attachments.as_utf8_path().to_owned(),
         paths.hooks.as_utf8_path().to_owned(),
     )
 }
@@ -610,23 +647,27 @@ async fn staged_dirs(
 /// `safe_relative_path` unit above: the guard has to actually be
 /// wired into the unpack loop, before any byte reaches disk.
 #[tokio::test]
-async fn stream_workspace_patches_rejects_traversal_end_to_end() {
+async fn stream_workspace_attachments_rejects_traversal_end_to_end() {
     let server = TestServer::new().await;
     let mut client = server.connect().await;
     let session_id = fresh_session(&mut client).await;
 
     let payload = tar_zst_forged_name(b"../escape.toml", b"pwned\n").await;
-    let stderr =
-        upload_and_collect_stderr(&mut client, STREAM_WORKSPACE_PATCHES, session_id, &payload)
-            .await;
+    let stderr = upload_and_collect_stderr(
+        &mut client,
+        STREAM_WORKSPACE_ATTACHMENTS,
+        session_id,
+        &payload,
+    )
+    .await;
 
     assert!(
         stderr.contains("`..`") || stderr.contains("absolute path"),
         "expected a traversal rejection, got: {stderr:?}",
     );
-    let (patches, _) = staged_dirs(&server, session_id).await;
+    let (attachments, _) = staged_dirs(&server, session_id).await;
     assert!(
-        !tokio::fs::try_exists(patches.join(PATCHES_READY_MARKER))
+        !tokio::fs::try_exists(attachments.join(ATTACHMENTS_READY_MARKER))
             .await
             .unwrap_or(false),
         "a rejected upload must not leave a ready marker",
@@ -635,18 +676,22 @@ async fn stream_workspace_patches_rejects_traversal_end_to_end() {
 
 /// An entry named exactly like the ready marker is refused: it
 /// would otherwise be copied into the sandbox home by
-/// `materialize_patches_into_home`, zeroing whatever the user had
+/// `materialize_attachments_into_home`, zeroing whatever the user had
 /// at that path.
 #[tokio::test]
-async fn stream_workspace_patches_rejects_marker_collision() {
+async fn stream_workspace_attachments_rejects_marker_collision() {
     let server = TestServer::new().await;
     let mut client = server.connect().await;
     let session_id = fresh_session(&mut client).await;
 
-    let payload = tar_zst(&[(PATCHES_READY_MARKER, b"")]).await;
-    let stderr =
-        upload_and_collect_stderr(&mut client, STREAM_WORKSPACE_PATCHES, session_id, &payload)
-            .await;
+    let payload = tar_zst(&[(ATTACHMENTS_READY_MARKER, b"")]).await;
+    let stderr = upload_and_collect_stderr(
+        &mut client,
+        STREAM_WORKSPACE_ATTACHMENTS,
+        session_id,
+        &payload,
+    )
+    .await;
 
     assert!(
         stderr.contains("ready-marker"),
@@ -658,15 +703,19 @@ async fn stream_workspace_patches_rejects_marker_collision() {
 /// otherwise be written as an empty *file*, which then breaks
 /// `create_dir_all` for anything nested beneath it.
 #[tokio::test]
-async fn stream_workspace_patches_rejects_non_regular_entry() {
+async fn stream_workspace_attachments_rejects_non_regular_entry() {
     let server = TestServer::new().await;
     let mut client = server.connect().await;
     let session_id = fresh_session(&mut client).await;
 
     let payload = tar_zst_raw(&[("adir", b"", async_tar::EntryType::Directory, None)]).await;
-    let stderr =
-        upload_and_collect_stderr(&mut client, STREAM_WORKSPACE_PATCHES, session_id, &payload)
-            .await;
+    let stderr = upload_and_collect_stderr(
+        &mut client,
+        STREAM_WORKSPACE_ATTACHMENTS,
+        session_id,
+        &payload,
+    )
+    .await;
 
     assert!(
         stderr.contains("only regular files"),
@@ -679,7 +728,7 @@ async fn stream_workspace_patches_rejects_non_regular_entry() {
 /// check that stops `Vec::with_capacity` being driven into an
 /// allocation failure.
 #[tokio::test]
-async fn stream_workspace_patches_rejects_oversize_declared_entry() {
+async fn stream_workspace_attachments_rejects_oversize_declared_entry() {
     let server = TestServer::new().await;
     let mut client = server.connect().await;
     let session_id = fresh_session(&mut client).await;
@@ -688,12 +737,16 @@ async fn stream_workspace_patches_rejects_oversize_declared_entry() {
         "big.toml",
         b"small body",
         async_tar::EntryType::Regular,
-        Some(MAX_PATCH_ENTRY_BYTES + 1),
+        Some(MAX_ATTACHMENT_ENTRY_BYTES + 1),
     )])
     .await;
-    let stderr =
-        upload_and_collect_stderr(&mut client, STREAM_WORKSPACE_PATCHES, session_id, &payload)
-            .await;
+    let stderr = upload_and_collect_stderr(
+        &mut client,
+        STREAM_WORKSPACE_ATTACHMENTS,
+        session_id,
+        &payload,
+    )
+    .await;
 
     assert!(
         stderr.contains("per-entry cap"),
@@ -706,37 +759,49 @@ async fn stream_workspace_patches_rejects_oversize_declared_entry() {
 /// branches: the first upload takes the plain-rename path (no
 /// prior tree), the second takes `RENAME_EXCHANGE`.
 #[tokio::test]
-async fn stream_workspace_patches_second_upload_replaces_the_tree() {
+async fn stream_workspace_attachments_second_upload_replaces_the_tree() {
     let server = TestServer::new().await;
     let mut client = server.connect().await;
     let session_id = fresh_session(&mut client).await;
 
     let first = tar_zst(&[("only-in-first.toml", b"a\n")]).await;
     assert_eq!(
-        upload_and_collect_stderr(&mut client, STREAM_WORKSPACE_PATCHES, session_id, &first).await,
+        upload_and_collect_stderr(
+            &mut client,
+            STREAM_WORKSPACE_ATTACHMENTS,
+            session_id,
+            &first
+        )
+        .await,
         "",
     );
     let second = tar_zst(&[("only-in-second.toml", b"b\n")]).await;
     assert_eq!(
-        upload_and_collect_stderr(&mut client, STREAM_WORKSPACE_PATCHES, session_id, &second).await,
+        upload_and_collect_stderr(
+            &mut client,
+            STREAM_WORKSPACE_ATTACHMENTS,
+            session_id,
+            &second
+        )
+        .await,
         "",
     );
 
-    let (patches, _) = staged_dirs(&server, session_id).await;
+    let (attachments, _) = staged_dirs(&server, session_id).await;
     assert!(
-        tokio::fs::try_exists(patches.join("only-in-second.toml"))
+        tokio::fs::try_exists(attachments.join("only-in-second.toml"))
             .await
             .unwrap(),
         "the second upload's contents must be present",
     );
     assert!(
-        !tokio::fs::try_exists(patches.join("only-in-first.toml"))
+        !tokio::fs::try_exists(attachments.join("only-in-first.toml"))
             .await
             .unwrap(),
         "the first upload's contents must be gone, not merged",
     );
     assert!(
-        tokio::fs::try_exists(patches.join(PATCHES_READY_MARKER))
+        tokio::fs::try_exists(attachments.join(ATTACHMENTS_READY_MARKER))
             .await
             .unwrap(),
         "the marker must survive the swap",
@@ -789,7 +854,7 @@ async fn stream_workspace_hook_scripts_unpacks_and_writes_marker() {
 }
 
 /// The hook-script stream enforces the same entry guards as the
-/// patch stream. Parameterized over the malformed shapes so the two
+/// attachment stream. Parameterized over the malformed shapes so the two
 /// paths can't drift in what they refuse.
 #[tokio::test]
 async fn stream_workspace_hook_scripts_rejects_malformed_entries() {
@@ -4511,7 +4576,7 @@ async fn submit_verdict_unknown_id_returns_unknown_session_id() {
         .call::<minimald_rpc::SubmitVerdict>(&boxes::wire::request::ContributionVerdict {
             session_id: SessionId::nil(),
             vars: vec![],
-            patches: vec![],
+            attachments: vec![],
             lifecycle_hooks: vec![],
         })
         .await;

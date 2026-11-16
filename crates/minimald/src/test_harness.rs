@@ -801,11 +801,11 @@ pub fn unwrap_ready(resp: minimald_rpc::ConfigureLoadoutResponse) {
 /// `ConfigureLoadout`, and `FinalizeSession` — and return the
 /// session's id. The result is an `Active` session ready to attach.
 ///
-/// The workspace is left empty (so the composition has no patches
+/// The workspace is left empty (so the composition has no attachments
 /// and no upload is needed) and the composition itself is empty
 /// (empty client contribution + empty project mfile), so
 /// `ConfigureLoadout` returns `Materialized` in one shot and
-/// `FinalizeSession` succeeds against an empty patches dir. A test
+/// `FinalizeSession` succeeds against an empty attachments dir. A test
 /// that wants a project in the mix seeds the workspace in between
 /// and drives the RPCs itself.
 pub async fn create_configured_session(
@@ -831,7 +831,7 @@ pub async fn create_configured_session(
             .await
             .unwrap(),
     );
-    // Empty composition → no patches. FinalizeSession short-
+    // Empty composition → no attachments. FinalizeSession short-
     // circuits the marker check in that case (there's nothing to
     // upload), so calling it directly is fine.
     match client

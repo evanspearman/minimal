@@ -1,6 +1,6 @@
-//! Patch source expansion.
+//! Attachment source expansion.
 //!
-//! Expands `~/` and `$VAR` / `${VAR}` references in a patch's raw
+//! Expands `~/` and `$VAR` / `${VAR}` references in an attachment's raw
 //! source string against the session's already-resolved variables.
 //!
 //! # Semantic rules
@@ -28,7 +28,7 @@
 //!     directory. It is **reserved**: the name is intercepted before
 //!     the var lookup, so a loadout declaring a variable by that name
 //!     cannot shadow it here. Where no loadout declared the pattern —
-//!     a policy rule, a project's or a package's patch — referencing
+//!     a policy rule, a project's or a package's attachment — referencing
 //!     it is [`ExpandError::LoadoutRootUnavailable`] rather than a
 //!     silently wrong path.
 //! - After substitution the result is **path-normalized**: redundant
@@ -41,7 +41,7 @@
 //!   start with `/` after substitution produces
 //!   [`ExpandError::NotAbsolute`]. Use `~/foo` or `$HOME/foo` for
 //!   home-relative paths — they expand to an absolute form during
-//!   substitution. A patch a *project* declared may also use a
+//!   substitution. An attachment a *project* declared may also use a
 //!   repo-relative source (`source = "config/myrc"`): when a
 //!   [`Anchors::project_root`] is supplied, a still-relative pattern
 //!   is joined onto it before the absoluteness check.
@@ -70,10 +70,10 @@ impl VarLookup for [ResolvedVar] {
 
 /// The reserved reference naming the declaring loadout's own
 /// directory — `<loadouts dir>/<loadout name>/`, beside the
-/// `<name>.toml` that declared the patch, and the same directory its
+/// `<name>.toml` that declared the attachment, and the same directory its
 /// external hook scripts resolve against.
 ///
-/// Lets a loadout ship the files it patches in next to itself
+/// Lets a loadout ship the files it attachments in next to itself
 /// (`source = "$LOADOUT_ROOT/config.toml"`) instead of hard-coding an
 /// absolute path into the user's config directory, which breaks the
 /// moment that directory moves.
@@ -101,7 +101,7 @@ pub struct Anchors<'a> {
     /// for anything a loadout didn't declare.
     pub loadout_root: Option<&'a str>,
     /// The declaring project's root directory, for resolving
-    /// repo-relative patch sources (e.g. `source = "config/myrc"`).
+    /// repo-relative attachment sources (e.g. `source = "config/myrc"`).
     /// `None` for anything a project didn't declare.
     pub project_root: Option<&'a str>,
 }
@@ -133,7 +133,7 @@ impl<'a> Anchors<'a> {
     }
 }
 
-/// Errors produced when expanding a patch source.
+/// Errors produced when expanding an attachment source.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ExpandError {
@@ -149,7 +149,7 @@ pub enum ExpandError {
 
     /// The fully-expanded string failed to parse as a glob.
     #[error("expanded source is not a valid glob: {0}")]
-    PostExpansionInvalid(#[from] crate::core::primitives::PatchError),
+    PostExpansionInvalid(#[from] crate::core::primitives::AttachmentError),
 
     /// A `..` path component was found anywhere in the (raw or
     /// substituted) pattern. Parent-dir components are rejected
@@ -159,7 +159,7 @@ pub enum ExpandError {
     PathTraversal { pattern: String },
 
     /// The fully-substituted pattern is not absolute (doesn't start
-    /// with `/`). Patch sources and policy patterns must resolve to
+    /// with `/`). Attachment sources and policy patterns must resolve to
     /// absolute paths so the gate can drive a filesystem walk and
     /// produce reproducible policy decisions. Relative patterns
     /// would silently depend on the process CWD, which is brittle
@@ -186,19 +186,19 @@ pub enum ExpandError {
     UnsupportedTildeUser { pattern: String },
 
     /// A pattern referenced [`LOADOUT_ROOT`] with no loadout to anchor
-    /// it to — a user-policy rule, or a patch a project or package
+    /// it to — a user-policy rule, or an attachment a project or package
     /// declared. There is no sensible fallback: every candidate
     /// directory would belong to some *other* declarer, so the
     /// reference is refused rather than resolved to the wrong tree.
     #[error(
         "pattern `{pattern}` references `$LOADOUT_ROOT`, which only resolves in \
-         patch sources declared by a loadout"
+         attachment sources declared by a loadout"
     )]
     LoadoutRootUnavailable { pattern: String },
 }
 
 /// Expand `raw` against `resolved_vars` and parse the result as a
-/// [`FileSet`] intended as a **patch source pattern** — the input
+/// [`FileSet`] intended as a **attachment source pattern** — the input
 /// to the walker. The result must be absolute so the walker has a
 /// concrete starting point.
 ///
@@ -248,7 +248,7 @@ pub fn expand_source_with_plain_dir(
 
 /// Expand `raw` against `resolved_vars` and parse the result as a
 /// [`FileSet`] intended as a **policy pattern** — checked against
-/// paths that other patches produce.
+/// paths that other attachments produce.
 ///
 /// Same substitution and normalization as [`expand_source`], but
 /// the result does not have to be absolute: a policy pattern like
@@ -344,7 +344,7 @@ fn expand_pattern(
             // `LOADOUT_ROOT` is reserved: resolved from the anchors and
             // never from the var set, so a loadout that also declares a
             // variable by that name (for the session's env, say) can't
-            // redirect its own patch sources by accident.
+            // redirect its own attachment sources by accident.
             let value = if name == LOADOUT_ROOT {
                 anchors
                     .loadout_root
@@ -390,7 +390,7 @@ fn expand_pattern(
     let normalized = normalize_path(&out)?;
     let unescaped_normalized = normalize_path(&unescaped)?;
     if require_absolute == RequireAbsolute::Yes && !normalized.starts_with('/') {
-        // A project-declared patch may use a repo-relative source
+        // A project-declared attachment may use a repo-relative source
         // (e.g. `source = "config/myrc"`). When a project root is
         // available, join the still-relative pattern onto it so the
         // absoluteness check passes. `..` is still rejected by
@@ -811,7 +811,7 @@ mod tests {
     /// Regression: the `~/...` tilde form must escape glob metas in
     /// HOME just like `$HOME/...` does. A home like `/home/u[1]` must
     /// not have its `[1]` parsed as a glob class, which would cause
-    /// `walk_root()` to truncate at the metachar and the patch to
+    /// `walk_root()` to truncate at the metachar and the attachment to
     /// silently match nothing.
     #[test]
     fn tilde_form_escapes_glob_metas_in_home() {
@@ -1179,7 +1179,7 @@ mod tests {
 
     /// The reference resolves to the anchor the caller supplied, in
     /// both spellings, and composes with the rest of the pattern —
-    /// including globs, which is how a loadout patches in a whole
+    /// including globs, which is how a loadout attachments in a whole
     /// directory it ships.
     #[test]
     fn loadout_root_substitutes_the_anchor() {
@@ -1223,7 +1223,7 @@ mod tests {
 
     /// The name is reserved: it resolves from the anchor even when a
     /// variable of the same name is in scope, so a loadout that exports
-    /// `LOADOUT_ROOT` into its session env can't redirect its own patch
+    /// `LOADOUT_ROOT` into its session env can't redirect its own attachment
     /// sources by accident.
     #[test]
     fn loadout_root_is_not_shadowed_by_a_var_of_the_same_name() {
@@ -1234,7 +1234,7 @@ mod tests {
         );
     }
 
-    /// With no loadout to anchor against — a policy rule, or a patch a
+    /// With no loadout to anchor against — a policy rule, or an attachment a
     /// project or package declared — the reference is refused. The
     /// alternative, falling back to the var set, would silently resolve
     /// to whatever a loadout happened to export.
@@ -1319,7 +1319,7 @@ mod tests {
     }
 
     /// A relative source with no project root still fails with
-    /// `NotAbsolute` — the existing behaviour for non-project patches.
+    /// `NotAbsolute` — the existing behaviour for non-project attachments.
     #[test]
     fn relative_source_without_project_root_is_not_absolute() {
         let vars: [ResolvedVar; 0] = [];
@@ -1418,7 +1418,7 @@ mod tests {
 
     // ---- plain-directory source ----
 
-    /// A patch source that names an existing directory with no glob
+    /// An attachment source that names an existing directory with no glob
     /// metacharacters is treated as `<dir>/**/*`, so it delivers the
     /// directory tree instead of silently matching nothing.
     #[test]

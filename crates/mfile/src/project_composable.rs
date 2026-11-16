@@ -3,7 +3,7 @@
 //! [`ProjectComposable`] pairs a project's [`Session`] block with its
 //! project path, tagging every primitive it produces with
 //! [`Source::Project`]. It mirrors [`Loadout`]'s materialization for
-//! packages, patches, and lifecycle hooks — but **not** for vars.
+//! packages, attachments, and lifecycle hooks — but **not** for vars.
 //!
 //! A project routes its vars through the shared
 //! [`contribute_primitives`] / [`ResolvedVar::resolve_with`] path, so
@@ -85,7 +85,7 @@ impl Composable for ProjectComposable {
             self.session.packages,
             self.session.vars,
             self.session.vars_lenient,
-            self.session.patches,
+            self.session.attachments,
             self.session.lifecycle_hooks,
             env,
         )
@@ -108,7 +108,7 @@ mod tests {
             r#"
             [session]
             packages = ["rustc", "cargo"]
-            patches = [
+            attachments = [
                 { dest = "~/.cargo/config.toml", source = "config/cargo.toml" },
             ]
 
@@ -130,7 +130,7 @@ mod tests {
         let contribution = comp.contribute(&env).expect("contribute succeeds");
 
         assert_eq!(contribution.vars().len(), 2);
-        assert_eq!(contribution.patches().len(), 1);
+        assert_eq!(contribution.attachments().len(), 1);
         assert_eq!(contribution.packages().len(), 2);
         // A declared project hook is accepted and composed — the feature
         // is disabled downstream (output + execution), not by dropping it
@@ -143,7 +143,7 @@ mod tests {
         for pv in contribution.vars() {
             assert_eq!(pv.source(), &expected_source);
         }
-        for pp in contribution.patches() {
+        for pp in contribution.attachments() {
             assert_eq!(pp.source(), &expected_source);
         }
         for pp in contribution.packages() {

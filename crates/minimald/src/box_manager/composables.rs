@@ -494,7 +494,7 @@ pub(crate) fn build_composables(
             package = %bs.name,
             state_wiring_len = state_wiring.len(),
             fs_mappings = ?fs_mappings,
-            "compose: package contributes vars and/or patches",
+            "compose: package contributes vars and/or attachments",
         );
         package_composables.push(mfile::PackageComposable::new(
             bs.name.clone(),
@@ -609,10 +609,10 @@ mod tests {
     /// off the `SetupForPackages` output.
     ///
     /// Only env-vars and state-dirs are compared here — Phase 2
-    /// (composition patches → sandbox) is still deferred, so the
+    /// (composition attachments → sandbox) is still deferred, so the
     /// fs-mapping parity check waits until that lands. The
     /// composition side of that path is already exercised by
-    /// `contribute_maps_fs_mappings_to_patches` in `mfile`.
+    /// `contribute_maps_fs_mappings_to_attachments` in `mfile`.
     #[test]
     fn state_wiring_composition_matches_setup_for_packages() {
         let layer = Layer::new_for_test(

@@ -2,7 +2,7 @@
 //! their policy, and emits a wire contribution to ship to the daemon.
 
 use crate::core::compose::{
-    Composable, ComposeError, ComposeOptions, Composition, Contribution, Error, PatchAnchors,
+    AttachmentAnchors, Composable, ComposeError, ComposeOptions, Composition, Contribution, Error,
     StoredEnv, compose_contribution, default_env,
 };
 use crate::core::loadout::Loadout;
@@ -23,19 +23,19 @@ pub struct UserComposer {
     contribution: Contribution,
     /// Names of every loadout already accepted via [`Self::add`].
     /// Duplicates are rejected up-front: `Loadout::follow_symlinks`
-    /// is now stamped onto each patch's [`ProvenancedPatch`] and
+    /// is now stamped onto each attachment's [`ProvenancedAttachment`] and
     /// keyed by loadout name in the [`Source::UserLoadout`]
     /// provenance, so two loadouts sharing a name would produce
-    /// patches that couldn't be attributed unambiguously.
+    /// attachments that couldn't be attributed unambiguously.
     ///
     /// [`Source::UserLoadout`]: crate::core::source::Source::UserLoadout
     seen_names: std::collections::HashSet<crate::core::loadout::LoadoutName>,
     /// The directory the added loadouts were read from, set via
     /// [`Self::with_loadouts_dir`]. Anchors `$LOADOUT_ROOT` in their
-    /// patch sources: loadout `dev` resolves it to `<dir>/dev`. Unset
+    /// attachment sources: loadout `dev` resolves it to `<dir>/dev`. Unset
     /// means no loadout here can use the reference — the composer has
     /// no way to guess which directory a loadout came from, and a wrong
-    /// guess would patch from the wrong tree.
+    /// guess would copy from the wrong tree.
     loadouts_dir: Option<paths::HostAbsPath>,
     /// First-prompt orientation facts, set via
     /// [`Self::with_orientation`] and emitted on the composed
@@ -91,7 +91,7 @@ impl UserComposer {
     }
 
     /// Set the directory the loadouts being added were read from, which
-    /// is what `$LOADOUT_ROOT` in their patch sources resolves against —
+    /// is what `$LOADOUT_ROOT` in their attachment sources resolves against —
     /// loadout `dev` gets `<dir>/dev`, the same directory its external
     /// hook scripts resolve against.
     ///
@@ -125,10 +125,10 @@ impl UserComposer {
     /// or `InheritWithDefault` variables against `env`.
     pub fn add(&mut self, loadout: Loadout) -> Result<(), Error> {
         // Loadout names must be unique within a composer instance.
-        // Two loadouts sharing a name would produce patches under the
+        // Two loadouts sharing a name would produce attachments under the
         // same `Source::UserLoadout { name }`, and their
-        // `follow_symlinks` overrides — stamped onto each patch's
-        // `ProvenancedPatch` at contribute time — couldn't be
+        // `follow_symlinks` overrides — stamped onto each attachment's
+        // `ProvenancedAttachment` at contribute time — couldn't be
         // attributed unambiguously downstream.
         if self.seen_names.contains(loadout.name()) {
             return Err(Error::DuplicateLoadout {
@@ -163,7 +163,7 @@ impl UserComposer {
     ///
     /// Today the layer carries `packages`: every package the added
     /// loadouts ask for, in the order they were added, each once. It
-    /// carries no key when no loadout asks for a package. Vars, patches
+    /// carries no key when no loadout asks for a package. Vars, attachments
     /// and lifecycle hooks stay on the [`WireContribution`], because the
     /// daemon gates them and their values must not reach the spec bytes.
     #[must_use]
@@ -208,7 +208,7 @@ impl UserComposer {
         // (this is the user's own process environment, so it's the
         // right HOME to use when the loadout doesn't declare one).
         let home_fallback = (*self.env)("HOME").ok();
-        let anchors = PatchAnchors::home(home_fallback.as_deref())
+        let anchors = AttachmentAnchors::home(home_fallback.as_deref())
             .with_loadouts_dir(self.loadouts_dir.as_ref());
         let (composition, final_policy) =
             compose_contribution(self.contribution, &[], policy, None, options, anchors)?;
@@ -223,10 +223,10 @@ fn composition_to_wire(
     composition: Composition,
     orientation: crate::core::compose::Orientation,
 ) -> WireContribution {
-    let (vars, patches, packages, lifecycle_hooks) = composition.into_parts();
+    let (vars, attachments, packages, lifecycle_hooks) = composition.into_parts();
     WireContribution {
         vars: vars.into_iter().map(Into::into).collect(),
-        patches: patches.into_iter().map(Into::into).collect(),
+        attachments: attachments.into_iter().map(Into::into).collect(),
         lifecycle_hooks: lifecycle_hooks.into_iter().map(Into::into).collect(),
         requested_packages: packages.into_iter().map(Into::into).collect(),
         orientation: orientation.into(),
@@ -241,7 +241,7 @@ mod tests {
     use crate::core::lifecyclehook::{HookScript, LifecycleHook};
     use crate::core::loadout::LoadoutName;
     use crate::core::policy::VarsPolicy;
-    use crate::core::primitives::{Patch, PatchDest, StrictVarName, VarValue};
+    use crate::core::primitives::{Attachment, AttachmentDest, StrictVarName, VarValue};
 
     fn loadout_named(name: &str) -> Loadout {
         Loadout::new(LoadoutName::try_new(name).unwrap())
@@ -395,7 +395,7 @@ mod tests {
     }
 
     /// Adding two loadouts with the same name is rejected. This is
-    /// the invariant that lets each patch's `follow_symlinks`
+    /// the invariant that lets each attachment's `follow_symlinks`
     /// override be attributed unambiguously to its source loadout.
     #[test]
     fn add_rejects_duplicate_loadout_names() {
@@ -410,31 +410,34 @@ mod tests {
         );
     }
 
-    /// Per-loadout `follow_symlinks` is stamped onto every patch the
+    /// Per-loadout `follow_symlinks` is stamped onto every attachment the
     /// loadout contributes; a loadout that doesn't set it leaves
-    /// patches with `follow_symlinks = None`, which falls through to
+    /// attachments with `follow_symlinks = None`, which falls through to
     /// the compose default at expand time.
     #[test]
-    fn per_loadout_follow_symlinks_stamps_onto_contributed_patches() {
-        use crate::core::primitives::{Patch, PatchDest};
+    fn per_loadout_follow_symlinks_stamps_onto_contributed_attachments() {
+        use crate::core::primitives::{Attachment, AttachmentDest};
 
-        let patch = Patch::new("/tmp/whatever", PatchDest::try_new("etc/whatever").unwrap());
+        let attachment = Attachment::new(
+            "/tmp/whatever",
+            AttachmentDest::try_new("etc/whatever").unwrap(),
+        );
         let opted_in = loadout_named("follow")
-            .with_patch(patch.clone())
+            .with_attachment(attachment.clone())
             .with_follow_symlinks(true);
-        let inherit = loadout_named("inherit").with_patch(patch);
+        let inherit = loadout_named("inherit").with_attachment(attachment);
 
         let contrib_in = opted_in
             .contribute(&|_| Err(std::env::VarError::NotPresent))
             .unwrap();
-        assert_eq!(contrib_in.patches.len(), 1);
-        assert_eq!(contrib_in.patches[0].follow_symlinks(), Some(true));
+        assert_eq!(contrib_in.attachments.len(), 1);
+        assert_eq!(contrib_in.attachments[0].follow_symlinks(), Some(true));
 
         let contrib_none = inherit
             .contribute(&|_| Err(std::env::VarError::NotPresent))
             .unwrap();
-        assert_eq!(contrib_none.patches.len(), 1);
-        assert_eq!(contrib_none.patches[0].follow_symlinks(), None);
+        assert_eq!(contrib_none.attachments.len(), 1);
+        assert_eq!(contrib_none.attachments[0].follow_symlinks(), None);
     }
 
     /// `add_all` runs a sequence of loadouts. Multiple loadouts
@@ -480,7 +483,7 @@ mod tests {
         assert_eq!(wire.vars[0].var.value, "en_US.UTF-8");
     }
 
-    /// End-to-end: a loadout with vars, patches, packages, and a
+    /// End-to-end: a loadout with vars, attachments, packages, and a
     /// hook contributes all four kinds.
     #[test]
     fn loadout_contributes_all_four_kinds() {
@@ -488,7 +491,10 @@ mod tests {
         let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
         let file = root.join("conf.toml");
         std::fs::write(file.as_std_path(), "x").unwrap();
-        let patch = Patch::new(file.as_str(), PatchDest::try_new("etc/conf.toml").unwrap());
+        let attachment = Attachment::new(
+            file.as_str(),
+            AttachmentDest::try_new("etc/conf.toml").unwrap(),
+        );
 
         let hook = LifecycleHook::builder()
             .with_on_activate(HookScript::inline("echo hi"))
@@ -501,7 +507,7 @@ mod tests {
                 VarValue::specified("hx"),
             )
             .with_package("helix")
-            .with_patch(patch)
+            .with_attachment(attachment)
             .with_lifecycle_hook(hook);
 
         let mut composer = UserComposer::new();
@@ -510,7 +516,7 @@ mod tests {
             .compose(UserPolicy::empty(), ComposeOptions::default())
             .unwrap();
         assert_eq!(wire.vars.len(), 1);
-        assert_eq!(wire.patches.len(), 1);
+        assert_eq!(wire.attachments.len(), 1);
         assert_eq!(wire.requested_packages.len(), 1);
         assert_eq!(wire.lifecycle_hooks.len(), 1);
     }

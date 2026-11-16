@@ -1,6 +1,6 @@
 //! Wire-form error envelope.
 //!
-//! Rich local error types — [`ComposeError`], `PatchError`, `VarError`,
+//! Rich local error types — [`ComposeError`], `AttachmentError`, `VarError`,
 //! `ExpandError` — stay local. They carry source chains, IO errors,
 //! and other non-serializable detail. Anything that needs to cross the
 //! RPC boundary collapses to [`WireError`] with a string summary.
@@ -18,7 +18,7 @@
 pub enum WireError {
     /// The client's contribution failed validation. `message` is a
     /// human-readable explanation; structured detail (which var,
-    /// which patch) is intentionally omitted to keep the wire schema
+    /// which attachment) is intentionally omitted to keep the wire schema
     /// small. Use telemetry for forensic detail.
     #[error("invalid contribution: {message}")]
     InvalidContribution {

@@ -10,7 +10,7 @@ use core::fmt;
 
 use paths::HostPath;
 
-use crate::core::primitives::{Patch, ResolvedVar};
+use crate::core::primitives::{Attachment, ResolvedVar};
 
 /// Where a contribution came from — the provenance attached to every
 /// item that flows through the composer.
@@ -27,7 +27,7 @@ pub enum Source {
     UserLoadout { name: String },
     /// A project's `minimal.toml`, identified by the project root
     /// directory on the client host (not the config file's path).
-    /// Repo-relative patch sources resolve against this directory.
+    /// Repo-relative attachment sources resolve against this directory.
     Project { path: HostPath },
     /// A specific package's declaration, identified by package name.
     Package { name: String },
@@ -44,7 +44,7 @@ impl Source {
     ///
     /// One definition of "a loadout's directory", shared by everything
     /// that anchors against it — external hook scripts
-    /// ([`ScriptAnchors::for_source`]) and the `$LOADOUT_ROOT` patch-source
+    /// ([`ScriptAnchors::for_source`]) and the `$LOADOUT_ROOT` attachment-source
     /// reference ([`expand_source`]).
     ///
     /// `None` for every non-loadout source, and for a loadout whose name
@@ -124,10 +124,10 @@ impl Provenanced for ProvenancedVar {
     }
 }
 
-/// A [`Patch`] tagged with its [`Source`] for the composer.
+/// A [`Attachment`] tagged with its [`Source`] for the composer.
 ///
 /// `follow_symlinks` overrides the compose-level default for this
-/// specific patch's walk. `None` means "use the compose default";
+/// specific attachment's walk. `None` means "use the compose default";
 /// `Some(v)` wins. Populated by [`Loadout::contribute`] from
 /// [`Loadout::follow_symlinks`]; non-loadout contributors emit
 /// `None` and inherit the default.
@@ -135,26 +135,26 @@ impl Provenanced for ProvenancedVar {
 /// [`Loadout::contribute`]: crate::core::loadout::Loadout::contribute
 /// [`Loadout::follow_symlinks`]: crate::core::loadout::Loadout::follow_symlinks
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ProvenancedPatch {
-    patch: Patch,
+pub struct ProvenancedAttachment {
+    attachment: Attachment,
     source: Source,
     follow_symlinks: Option<bool>,
 }
 
-impl ProvenancedPatch {
-    /// Construct a [`ProvenancedPatch`] with no per-item
+impl ProvenancedAttachment {
+    /// Construct a [`ProvenancedAttachment`] with no per-item
     /// follow-symlinks override; the walker uses the compose default.
     #[must_use]
-    pub fn new(patch: Patch, source: Source) -> Self {
+    pub fn new(attachment: Attachment, source: Source) -> Self {
         Self {
-            patch,
+            attachment,
             source,
             follow_symlinks: None,
         }
     }
 
-    /// Set the per-patch follow-symlinks override. Owned-builder
-    /// form so a caller building `ProvenancedPatch` inline reads
+    /// Set the per-attachment follow-symlinks override. Owned-builder
+    /// form so a caller building `ProvenancedAttachment` inline reads
     /// linearly.
     #[must_use]
     pub fn with_follow_symlinks(mut self, follow_symlinks: Option<bool>) -> Self {
@@ -162,27 +162,27 @@ impl ProvenancedPatch {
         self
     }
 
-    /// The wrapped [`Patch`].
+    /// The wrapped [`Attachment`].
     #[must_use]
-    pub fn patch(&self) -> &Patch {
-        &self.patch
+    pub fn attachment(&self) -> &Attachment {
+        &self.attachment
     }
 
-    /// The per-patch follow-symlinks override (`None` = inherit
+    /// The per-attachment follow-symlinks override (`None` = inherit
     /// the compose default).
     #[must_use]
     pub fn follow_symlinks(&self) -> Option<bool> {
         self.follow_symlinks
     }
 
-    /// Consume and return the inner patch, source, and follow-symlinks override.
+    /// Consume and return the inner attachment, source, and follow-symlinks override.
     #[must_use]
-    pub fn into_parts(self) -> (Patch, Source, Option<bool>) {
-        (self.patch, self.source, self.follow_symlinks)
+    pub fn into_parts(self) -> (Attachment, Source, Option<bool>) {
+        (self.attachment, self.source, self.follow_symlinks)
     }
 }
 
-impl Provenanced for ProvenancedPatch {
+impl Provenanced for ProvenancedAttachment {
     fn source(&self) -> &Source {
         &self.source
     }
@@ -303,7 +303,7 @@ mod tests {
     }
 
     /// A loadout's directory is its name under the loadouts directory —
-    /// the anchor both its hook scripts and its `$LOADOUT_ROOT` patch
+    /// the anchor both its hook scripts and its `$LOADOUT_ROOT` attachment
     /// sources resolve against.
     #[test]
     fn loadout_dir_is_the_name_under_the_loadouts_dir() {

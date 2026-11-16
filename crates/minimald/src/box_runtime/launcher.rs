@@ -4,14 +4,14 @@
 use super::*;
 
 /// Emit one `tracing::info!` per item the launcher folds into the
-/// session — packages, vars, and patches — tagging each with its
+/// session — packages, vars, and attachments — tagging each with its
 /// provenance so an operator can trace "where did `EDITOR=hx` come
 /// from?" back to the loadout / project / package that contributed
 /// it.
 ///
 /// Baseline packages (the launcher-defaults `base`, `coreutils`,
 /// `socat`) log with `source = "launcher-baseline"` so they can be
-/// distinguished from composition contributions. Patches and hooks
+/// distinguished from composition contributions. Attachments and hooks
 /// still log even though the launcher can't act on them yet — an
 /// operator inspecting a session should see the intent even when
 /// the plumbing is deferred.
@@ -61,15 +61,15 @@ pub(super) fn log_session_contents(
             "session var value",
         );
     }
-    for sp in comp.patches() {
-        let patch = sp.patch();
+    for sp in comp.attachments() {
+        let attachment = sp.attachment();
         tracing::info!(
             session = session_name,
-            domain = "patch",
-            host_source = %patch.host_path(),
-            sandbox_dest = %patch.destination(),
+            domain = "attachment",
+            host_source = %attachment.host_path(),
+            sandbox_dest = %attachment.destination(),
             source = ?boxes::core::source::Provenanced::source(sp),
-            "session content (patch: materialized into session home at FinalizeSession)",
+            "session content (attachment: materialized into session home at FinalizeSession)",
         );
     }
     // Hooks are logged in setup order (project first, then loadouts —
@@ -783,7 +783,7 @@ pub(crate) struct SandboxLauncher {
     /// VM host, where the in-VM daemon draws nothing (NET-138).
     pub(crate) box_addresses: Option<boxes::BoxAddresses>,
     /// Composition to merge into the launcher's baseline packages and
-    /// vars. Patches and lifecycle hooks are ignored today.
+    /// vars. Attachments and lifecycle hooks are ignored today.
     pub(crate) composition: Option<std::sync::Arc<boxes::core::compose::Composition>>,
     /// Weak handle back to the owning session actor, for  `min` commands
     /// (e.g. `min build`) to drive session side-ops.
@@ -1511,7 +1511,7 @@ impl BoxLauncher for SandboxLauncher {
         // Both maps carry only resolved values, so the composition-
         // vars merge doesn't need `EnvVarValue::Value(...)` at
         // each insert: `EnvArgs::with_resolved_env_vars` wraps once
-        // at the boundary. Composition patches and lifecycle hooks
+        // at the boundary. Composition attachments and lifecycle hooks
         // are not applied yet (the file-upload path and in-sandbox
         // exec plumbing that they need aren't wired), so they pass
         // through this stage untouched.
@@ -1618,7 +1618,7 @@ impl BoxLauncher for SandboxLauncher {
         // `name` has moved into `EnvArgs`.
         let session_label = name.clone();
         // Log every item that will (or would) end up in the session,
-        // tagged with its provenance. Patches and lifecycle hooks are
+        // tagged with its provenance. Attachments and lifecycle hooks are
         // included even though the launcher can't act on them yet —
         // an operator inspecting logs should see the intent.
         log_session_contents(&name, BASELINE_PACKAGES, composition.as_deref());

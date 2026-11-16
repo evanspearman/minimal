@@ -1,16 +1,16 @@
-//! Walk patch sources and enumerate matched files.
+//! Walk attachment sources and enumerate matched files.
 
 use camino::{Utf8Path, Utf8PathBuf};
 
 use paths::{HostAbsPath, SandboxRelPath};
 
 use crate::core::compose::ComposeError;
-use crate::core::primitives::{FileSet, PatchDest, PatchError};
+use crate::core::primitives::{AttachmentDest, AttachmentError, FileSet};
 use crate::core::source::{Provenanced, Source};
 
 /// Directory names excluded by default when walking a plain-directory
-/// patch source. These are common VCS and dependency directories that
-/// are almost never intended to be patched into a session.
+/// attachment source. These are common VCS and dependency directories that
+/// are almost never intended to be copied into a session.
 ///
 /// This is a fixed allowlist of well-known names, not a `.gitignore`
 /// walk. A `.gitignore`-driven exclusion would be a moving target:
@@ -21,19 +21,19 @@ use crate::core::source::{Provenanced, Source};
 const DEFAULT_EXCLUDED_DIRS: &[&str] = &[".git", ".hg", ".svn", "CVS", ".jj", "node_modules"];
 
 /// Maximum total size in bytes for files enumerated from a single
-/// plain-directory patch source (100 MiB). Exceeding this produces a
+/// plain-directory attachment source (100 MiB). Exceeding this produces a
 /// hard error rather than silently copying an unbounded tree.
 const MAX_PLAIN_DIR_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
 
-/// Per-file entry derived from a [`Patch`] after its source
+/// Per-file entry derived from a [`Attachment`] after its source
 /// [`FileSet`] is walked. `link_path` is `Some` only when symlink
 /// resolution produced a distinct path (i.e. `follow_symlinks: true`
 /// and the walker traversed a symlink). Policy matching runs
 /// against both when present; deny on either wins.
 ///
-/// [`Patch`]: crate::core::primitives::Patch
+/// [`Attachment`]: crate::core::primitives::Attachment
 /// [`FileSet`]: crate::core::primitives::FileSet
-pub(crate) struct PatchFile {
+pub(crate) struct AttachmentFile {
     /// `Some` when the file was reached via a symlink that resolved
     /// to a distinct canonical target; `None` when no link is in play
     /// (the common case).
@@ -43,14 +43,14 @@ pub(crate) struct PatchFile {
     pub(crate) target_path: HostAbsPath,
     /// Destination for this file, relative to the sandbox user's home
     /// directory. Derived from the user-facing path (link when present,
-    /// target otherwise) relative to the patch's walk root, joined
-    /// under the patch's `dest`.
+    /// target otherwise) relative to the attachment's walk root, joined
+    /// under the attachment's `dest`.
     pub(crate) dest: SandboxRelPath,
-    /// The original patch's provenance.
+    /// The original attachment's provenance.
     pub(crate) provenance: Source,
 }
 
-impl PatchFile {
+impl AttachmentFile {
     /// The path the user "asked for" — the link form when distinct
     /// from the target, otherwise the target itself. Used for
     /// user-facing display (error messages, prompt context) and dest
@@ -60,27 +60,27 @@ impl PatchFile {
     }
 }
 
-impl Provenanced for PatchFile {
+impl Provenanced for AttachmentFile {
     fn source(&self) -> &Source {
         &self.provenance
     }
 }
 
-/// A patch whose source string has been expanded into a concrete
+/// An attachment whose source string has been expanded into a concrete
 /// [`FileSet`] against the session's resolved vars. Internal handoff
-/// type between `expand_patch_sources` and [`enumerate_patch_files`].
-pub(crate) struct ExpandedProvenancedPatch {
+/// type between `expand_attachment_sources` and [`enumerate_attachment_files`].
+pub(crate) struct ExpandedProvenancedAttachment {
     pub(crate) source: FileSet,
-    pub(crate) dest: PatchDest,
+    pub(crate) dest: AttachmentDest,
     pub(crate) provenance: Source,
-    /// Whether the walker should follow symlinks for this patch.
-    /// Resolved by [`expand_patch_sources`] from the compose default
-    /// and any per-patch override carried on [`ProvenancedPatch`], so
-    /// `enumerate_patch_files` reads it per-item and doesn't need to
+    /// Whether the walker should follow symlinks for this attachment.
+    /// Resolved by [`expand_attachment_sources`] from the compose default
+    /// and any per-attachment override carried on [`ProvenancedAttachment`], so
+    /// `enumerate_attachment_files` reads it per-item and doesn't need to
     /// consult any sidecar map.
     ///
-    /// [`expand_patch_sources`]: crate::core::compose::expand_patch_sources
-    /// [`ProvenancedPatch`]: crate::core::source::ProvenancedPatch
+    /// [`expand_attachment_sources`]: crate::core::compose::expand_attachment_sources
+    /// [`ProvenancedAttachment`]: crate::core::source::ProvenancedAttachment
     pub(crate) follow_symlinks: bool,
     /// Whether the source was a plain directory (no glob metacharacters
     /// naming an existing directory) that expansion rewrote to
@@ -90,12 +90,12 @@ pub(crate) struct ExpandedProvenancedPatch {
     pub(crate) plain_directory: bool,
 }
 
-/// Walk each pre-expanded patch's `FileSet` and produce one
-/// [`PatchFile`] per matched host file.
+/// Walk each pre-expanded attachment's `FileSet` and produce one
+/// [`AttachmentFile`] per matched host file.
 ///
-/// **Per-item follow behavior.** Each [`ExpandedProvenancedPatch`]
+/// **Per-item follow behavior.** Each [`ExpandedProvenancedAttachment`]
 /// carries its own resolved `follow_symlinks` bool — the walker
-/// reads it per iteration, so two patches in the same call can
+/// reads it per iteration, so two attachments in the same call can
 /// drive different follow behavior.
 ///
 /// **Path safety:** every yielded file is canonicalized via
@@ -110,22 +110,22 @@ pub(crate) struct ExpandedProvenancedPatch {
 /// can't appear in the walk root or yielded paths. A non-existent
 /// walk root surfaces as a walkdir error on first iteration.
 ///
-/// A patch whose walk root doesn't exist is *not* a hard error —
-/// a `tracing::warn!` names the missing path and the patch is
-/// dropped, so a loadout that opportunistically patches something
+/// An attachment whose walk root doesn't exist is *not* a hard error —
+/// a `tracing::warn!` names the missing path and the attachment is
+/// dropped, so a loadout that opportunistically attachments something
 /// like `~/dotfiles/helix/` doesn't fail activation on a host that
 /// doesn't have that dotfile tree. Other walk failures (permission
 /// denied, non-UTF-8 paths, etc.) still accumulate and surface as
-/// [`ComposeError::PatchWalk`].
-pub(crate) fn enumerate_patch_files(
-    items: Vec<ExpandedProvenancedPatch>,
-) -> Result<Vec<PatchFile>, ComposeError> {
+/// [`ComposeError::AttachmentWalk`].
+pub(crate) fn enumerate_attachment_files(
+    items: Vec<ExpandedProvenancedAttachment>,
+) -> Result<Vec<AttachmentFile>, ComposeError> {
     let mut out = Vec::new();
     let mut accumulated_errors = Vec::new();
     for pp in items {
         let follow_symlinks = pp.follow_symlinks;
         let Some(walk_root) = pp.source.walk_root() else {
-            accumulated_errors.push(PatchError::NoWalkRoot {
+            accumulated_errors.push(AttachmentError::NoWalkRoot {
                 pattern: pp.source.pattern().to_owned(),
             });
             continue;
@@ -147,11 +147,11 @@ pub(crate) fn enumerate_patch_files(
                             source_pattern = %pp.source.pattern(),
                             walk_root = %walk_root_path,
                             missing_path = ?source.path(),
-                            "patch source not found on host filesystem; dropping"
+                            "attachment source not found on host filesystem; dropping"
                         );
                         continue;
                     }
-                    accumulated_errors.push(PatchError::WalkFailure {
+                    accumulated_errors.push(AttachmentError::WalkFailure {
                         root: walk_root_path.clone(),
                         source,
                     });
@@ -164,7 +164,7 @@ pub(crate) fn enumerate_patch_files(
                     tracing::warn!(
                         source_pattern = %pp.source.pattern(),
                         walk_root = %walk_root_path,
-                        "patch source is a symlink and follow_symlinks is off; dropping (set follow_symlinks = true to include it)"
+                        "attachment source is a symlink and follow_symlinks is off; dropping (set follow_symlinks = true to include it)"
                     );
                     continue;
                 }
@@ -173,7 +173,7 @@ pub(crate) fn enumerate_patch_files(
             let link_path = match Utf8PathBuf::from_path_buf(entry.into_path()) {
                 Ok(p) => p,
                 Err(p) => {
-                    accumulated_errors.push(PatchError::NonUtf8Path {
+                    accumulated_errors.push(AttachmentError::NonUtf8Path {
                         path_lossy: p.to_string_lossy().into_owned(),
                     });
                     continue;
@@ -202,7 +202,7 @@ pub(crate) fn enumerate_patch_files(
             };
             let user_facing = link_path.as_ref().unwrap_or(&target_path);
             let dest = compute_dest(user_facing.as_utf8_path(), &walk_root_path, dest_root);
-            out.push(PatchFile {
+            out.push(AttachmentFile {
                 link_path,
                 target_path,
                 dest,
@@ -213,12 +213,12 @@ pub(crate) fn enumerate_patch_files(
     if accumulated_errors.is_empty() {
         return Ok(out);
     }
-    Err(ComposeError::PatchWalk {
+    Err(ComposeError::AttachmentWalk {
         sources: accumulated_errors,
     })
 }
 
-/// Build the walkdir iterator for a patch source. Plain-directory
+/// Build the walkdir iterator for an attachment source. Plain-directory
 /// sources apply the default-directory excludes; explicit globs and
 /// literal files walk everything.
 fn walk_entries(
@@ -236,7 +236,7 @@ fn walk_entries(
     }
 }
 
-/// Classification of a walkdir entry for [`enumerate_patch_files`].
+/// Classification of a walkdir entry for [`enumerate_attachment_files`].
 enum EntryClass {
     /// Skip this entry (directory, excluded dir, non-file).
     Skip,
@@ -256,7 +256,7 @@ fn classify_entry(
     walk_root_path: &Utf8PathBuf,
 ) -> EntryClass {
     if !entry.file_type().is_file() {
-        // A literal patch source that is itself a symlink to a
+        // A literal attachment source that is itself a symlink to a
         // *file* is the walk root (depth 0). With follow_symlinks
         // off the walker won't traverse it, so it's dropped with no
         // other signal — warn. A symlink to a *directory* is
@@ -285,24 +285,24 @@ fn is_default_excluded_dir(entry: &walkdir::DirEntry) -> bool {
 }
 
 /// Add `path`'s file size to `total` and return a
-/// [`PatchError::SizeCapExceeded`] if the cap is breached. A metadata
+/// [`AttachmentError::SizeCapExceeded`] if the cap is breached. A metadata
 /// read failure is a hard error: the file's size is unknown, so the
 /// cap cannot be enforced and the file must not be emitted.
 fn accumulate_size(
     total: &mut u64,
     path: &Utf8PathBuf,
     root: &Utf8PathBuf,
-) -> Result<(), PatchError> {
-    let meta = path
-        .as_std_path()
-        .metadata()
-        .map_err(|source| PatchError::SizeMetadataFailure {
-            path: path.clone(),
-            source,
-        })?;
+) -> Result<(), AttachmentError> {
+    let meta =
+        path.as_std_path()
+            .metadata()
+            .map_err(|source| AttachmentError::SizeMetadataFailure {
+                path: path.clone(),
+                source,
+            })?;
     *total = total.saturating_add(meta.len());
     if *total > MAX_PLAIN_DIR_TOTAL_BYTES {
-        Err(PatchError::SizeCapExceeded {
+        Err(AttachmentError::SizeCapExceeded {
             root: root.clone(),
             limit_bytes: MAX_PLAIN_DIR_TOTAL_BYTES,
         })
@@ -318,7 +318,7 @@ fn resolve_symlink_target(
     follow_symlinks: bool,
     link_path: &Utf8PathBuf,
     walker_path: &HostAbsPath,
-    errors: &mut Vec<PatchError>,
+    errors: &mut Vec<AttachmentError>,
 ) -> Option<(Option<HostAbsPath>, HostAbsPath)> {
     if !follow_symlinks {
         return Some((None, walker_path.clone()));
@@ -341,31 +341,31 @@ fn resolve_symlink_target(
 
 /// [`std::fs::canonicalize`] with UTF-8 enforcement.
 ///
-/// Returns [`PatchError::CanonicalizeFailure`] for any IO
+/// Returns [`AttachmentError::CanonicalizeFailure`] for any IO
 /// error — the path doesn't exist, the process can't traverse the
 /// prefix, or (most subtly) the path is a symlink loop. Returns
-/// [`PatchError::NonUtf8CanonicalPath`] if the canonical
+/// [`AttachmentError::NonUtf8CanonicalPath`] if the canonical
 /// form contains non-UTF-8 bytes (e.g. a parent directory with a
 /// non-UTF-8 name).
-pub(crate) fn canonicalize_utf8(path: &Utf8Path) -> Result<Utf8PathBuf, PatchError> {
+pub(crate) fn canonicalize_utf8(path: &Utf8Path) -> Result<Utf8PathBuf, AttachmentError> {
     match std::fs::canonicalize(path.as_std_path()) {
-        Ok(p) => Utf8PathBuf::from_path_buf(p).map_err(|p| PatchError::NonUtf8CanonicalPath {
+        Ok(p) => Utf8PathBuf::from_path_buf(p).map_err(|p| AttachmentError::NonUtf8CanonicalPath {
             path_lossy: p.to_string_lossy().into_owned(),
         }),
-        Err(source) => Err(PatchError::CanonicalizeFailure {
+        Err(source) => Err(AttachmentError::CanonicalizeFailure {
             path: path.to_path_buf(),
             source,
         }),
     }
 }
 
-/// Compute the destination for a single source file under a patch's
+/// Compute the destination for a single source file under an attachment's
 /// `dest`. The result is relative to the sandbox user's home directory,
-/// inherited from the patch's [`PatchDest`].
+/// inherited from the attachment's [`AttachmentDest`].
 ///
-/// - **Single-file patches** (`walk_root == source_path`): `dest` is
+/// - **Single-file attachments** (`walk_root == source_path`): `dest` is
 ///   used verbatim.
-/// - **Multi-file patches**: the source path's components beneath
+/// - **Multi-file attachments**: the source path's components beneath
 ///   `walk_root` are appended to `dest`. The strip is path-component
 ///   aware (camino's `strip_prefix`), so `/etc/xdg` will not match
 ///   `/etc/xdgfoo/`.
@@ -373,12 +373,12 @@ pub(crate) fn canonicalize_utf8(path: &Utf8Path) -> Result<Utf8PathBuf, PatchErr
 /// # Invariants (panic conditions)
 ///
 /// Both panics describe internal contracts that
-/// `enumerate_patch_files` is responsible for upholding. They should
+/// `enumerate_attachment_files` is responsible for upholding. They should
 /// be unreachable in normal operation; if one fires, it indicates a
 /// bug in this crate.
 ///
 /// 1. `walk_root` must be a path-component prefix of `source_path`.
-///    `enumerate_patch_files` walks `walk_root`, so every file it
+///    `enumerate_attachment_files` walks `walk_root`, so every file it
 ///    yields is a descendant.
 /// 2. `dest_root` is relative (it came from a [`SandboxRelPath`]) and
 ///    `suffix` is relative (it's the stripped tail), so the join
@@ -457,22 +457,22 @@ mod tests {
         assert!(
             matches!(
                 &errors[0],
-                crate::core::primitives::PatchError::NoWalkRoot { .. }
+                crate::core::primitives::AttachmentError::NoWalkRoot { .. }
             ),
             "got: {:?}",
             errors[0],
         );
     }
 
-    /// A *literal* (non-glob) patch source that resolves to a symlink
+    /// A *literal* (non-glob) attachment source that resolves to a symlink
     /// is the walk root itself, so with `follow_symlinks` off the walker
-    /// skips it and the patch is dropped (now with a warn — see the
+    /// skips it and the attachment is dropped (now with a warn — see the
     /// `is_file()` skip branch). Turning `follow_symlinks` on recovers
     /// it, which pins the cause to the follow decision rather than
-    /// anything else about the patch. Mirrors the issue's own control.
+    /// anything else about the attachment. Mirrors the issue's own control.
     #[test]
     fn literal_symlink_source_drops_off_and_lands_on() {
-        use crate::core::primitives::{FileSet, PatchDest};
+        use crate::core::primitives::{AttachmentDest, FileSet};
         use crate::core::source::Source;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -484,9 +484,9 @@ mod tests {
         )
         .unwrap();
 
-        let make_item = |follow_symlinks| ExpandedProvenancedPatch {
+        let make_item = |follow_symlinks| ExpandedProvenancedAttachment {
             source: FileSet::try_new(root.join("link.txt").as_str()).unwrap(),
-            dest: PatchDest::try_new("FROMLINK.txt").unwrap(),
+            dest: AttachmentDest::try_new("FROMLINK.txt").unwrap(),
             provenance: Source::UserLoadout {
                 name: "symsrc".to_string(),
             },
@@ -494,13 +494,13 @@ mod tests {
             plain_directory: false,
         };
 
-        let dropped = enumerate_patch_files(vec![make_item(false)]).unwrap();
+        let dropped = enumerate_attachment_files(vec![make_item(false)]).unwrap();
         assert!(
             dropped.is_empty(),
             "literal symlink source must drop when follow_symlinks is off",
         );
 
-        let landed = enumerate_patch_files(vec![make_item(true)]).unwrap();
+        let landed = enumerate_attachment_files(vec![make_item(true)]).unwrap();
         assert_eq!(
             landed.len(),
             1,
@@ -509,21 +509,21 @@ mod tests {
     }
 
     // =================================================================
-    // Per-patch `follow_symlinks` — each item drives its own walker
+    // Per-attachment `follow_symlinks` — each item drives its own walker
     // =================================================================
 
-    /// Two patches in a single `enumerate_patch_files` call: one
+    /// Two attachments in a single `enumerate_attachment_files` call: one
     /// follows a symlink, the other doesn't. Verifies the walker
     /// reads the bool per-item rather than from a call-level arg.
     #[test]
-    fn per_patch_follow_symlinks_drives_each_walker_independently() {
-        use crate::core::primitives::{FileSet, PatchDest};
+    fn per_attachment_follow_symlinks_drives_each_walker_independently() {
+        use crate::core::primitives::{AttachmentDest, FileSet};
         use crate::core::source::Source;
 
         let tmp = tempfile::tempdir().unwrap();
         // Canonicalize upfront to sidestep macOS's `/tmp -> /private/tmp`
         // prefix symlink. Without this, `canonicalize_utf8` inside
-        // `enumerate_patch_files` returns the `/private/tmp/...`
+        // `enumerate_attachment_files` returns the `/private/tmp/...`
         // form for every file — including the plain files — so
         // `target != walker_path` fires spuriously and the assertion
         // "at least one entry has link_path = None" fails. Two
@@ -557,18 +557,18 @@ mod tests {
         .unwrap();
 
         let items = vec![
-            ExpandedProvenancedPatch {
+            ExpandedProvenancedAttachment {
                 source: FileSet::try_new(format!("{}/*.conf", follow_dir.as_str())).unwrap(),
-                dest: PatchDest::try_new("dest_follow").unwrap(),
+                dest: AttachmentDest::try_new("dest_follow").unwrap(),
                 provenance: Source::UserLoadout {
                     name: "follow".to_string(),
                 },
                 follow_symlinks: true,
                 plain_directory: false,
             },
-            ExpandedProvenancedPatch {
+            ExpandedProvenancedAttachment {
                 source: FileSet::try_new(format!("{}/*.conf", nofollow_dir.as_str())).unwrap(),
-                dest: PatchDest::try_new("dest_nofollow").unwrap(),
+                dest: AttachmentDest::try_new("dest_nofollow").unwrap(),
                 provenance: Source::UserLoadout {
                     name: "nofollow".to_string(),
                 },
@@ -577,9 +577,9 @@ mod tests {
             },
         ];
 
-        let files = enumerate_patch_files(items).unwrap();
+        let files = enumerate_attachment_files(items).unwrap();
 
-        // Bucket by dest to identify which patch produced which.
+        // Bucket by dest to identify which attachment produced which.
         let follow_files: Vec<_> = files
             .iter()
             .filter(|f| f.dest.as_str().starts_with("dest_follow"))
@@ -593,7 +593,7 @@ mod tests {
         assert_eq!(
             follow_files.len(),
             2,
-            "follow patch should yield real + link entries",
+            "follow attachment should yield real + link entries",
         );
         // A followed symlink populates `link_path`; the plain file
         // has `link_path = None`.
@@ -606,7 +606,7 @@ mod tests {
         assert_eq!(
             nofollow_files.len(),
             1,
-            "no-follow patch should yield the real file only",
+            "no-follow attachment should yield the real file only",
         );
         assert!(nofollow_files[0].link_path.is_none());
     }
@@ -619,7 +619,7 @@ mod tests {
     /// names (`.git`, `node_modules`, etc.) at any depth.
     #[test]
     fn plain_directory_source_skips_default_excluded_dirs() {
-        use crate::core::primitives::{FileSet, PatchDest};
+        use crate::core::primitives::{AttachmentDest, FileSet};
         use crate::core::source::Source;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -630,9 +630,9 @@ mod tests {
         std::fs::create_dir(root.join("node_modules").as_std_path()).unwrap();
         std::fs::write(root.join("node_modules").join("dep.js").as_std_path(), "n").unwrap();
 
-        let item = ExpandedProvenancedPatch {
+        let item = ExpandedProvenancedAttachment {
             source: FileSet::try_new(format!("{}/**/*", root.as_str())).unwrap(),
-            dest: PatchDest::try_new("dest").unwrap(),
+            dest: AttachmentDest::try_new("dest").unwrap(),
             provenance: Source::UserLoadout {
                 name: "excludes".to_string(),
             },
@@ -640,7 +640,7 @@ mod tests {
             plain_directory: true,
         };
 
-        let files = enumerate_patch_files(vec![item]).unwrap();
+        let files = enumerate_attachment_files(vec![item]).unwrap();
         let dests: Vec<_> = files.iter().map(|f| f.dest.as_str()).collect();
         assert_eq!(dests, vec!["dest/keep.txt"]);
     }
@@ -651,7 +651,7 @@ mod tests {
     /// `follow_symlinks` off.
     #[test]
     fn symlinked_directory_source_copies_files_without_dropping() {
-        use crate::core::primitives::{FileSet, PatchDest};
+        use crate::core::primitives::{AttachmentDest, FileSet};
         use crate::core::source::Source;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -662,9 +662,9 @@ mod tests {
         let link_dir = root.join("link");
         std::os::unix::fs::symlink(real_dir.as_std_path(), link_dir.as_std_path()).unwrap();
 
-        let item = ExpandedProvenancedPatch {
+        let item = ExpandedProvenancedAttachment {
             source: FileSet::try_new(format!("{}/**/*", link_dir.as_str())).unwrap(),
-            dest: PatchDest::try_new("dest").unwrap(),
+            dest: AttachmentDest::try_new("dest").unwrap(),
             provenance: Source::UserLoadout {
                 name: "symdir".to_string(),
             },
@@ -672,7 +672,7 @@ mod tests {
             plain_directory: false,
         };
 
-        let files = enumerate_patch_files(vec![item]).unwrap();
+        let files = enumerate_attachment_files(vec![item]).unwrap();
         assert_eq!(
             files.len(),
             1,
@@ -695,6 +695,6 @@ mod tests {
         let small = Utf8PathBuf::from_path_buf(tmp.path().join("small.bin")).unwrap();
         std::fs::write(small.as_std_path(), vec![0u8; 2]).unwrap();
         let err = accumulate_size(&mut total, &small, &root).unwrap_err();
-        assert!(matches!(err, PatchError::SizeCapExceeded { .. }));
+        assert!(matches!(err, AttachmentError::SizeCapExceeded { .. }));
     }
 }

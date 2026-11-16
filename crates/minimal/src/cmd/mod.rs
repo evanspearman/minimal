@@ -1034,7 +1034,7 @@ pub(crate) fn can_prompt_interactively() -> bool {
 /// (interactive prompt vs. `--no-prompt` collect-and-abort).
 ///
 /// Split from [`submit_verdict_and_wait`] so `NoPromptHook` — which
-/// fake-approves every item to keep both var and patch hooks firing
+/// fake-approves every item to keep both var and attachment hooks firing
 /// — can be intercepted between "verdict computed" and "verdict
 /// submitted"; otherwise a `--no-prompt` run would submit a bogus
 /// approval on the wire.
@@ -1092,7 +1092,7 @@ pub(crate) async fn submit_verdict_and_wait(
 /// The interactive-prompt caller's happy path: gate, then submit,
 /// then return the finalized id + policy + the verdict that was
 /// submitted. The verdict is returned so the caller can pick the
-/// approved daemon-side patches out for upload — those files were
+/// approved daemon-side attachments out for upload — those files were
 /// only surfaced during Phase 3 and won't otherwise be available
 /// to the client-side upload step. Any gating failure aborts the
 /// daemon-side session before propagating.
@@ -1125,23 +1125,23 @@ pub(crate) async fn drive_pending_to_active(
             }
         }
     };
-    // Extract the approved-patch destinations before submit consumes
+    // Extract the approved-attachment destinations before submit consumes
     // the verdict — avoids cloning the whole wire type (both vars
-    // and patches Vecs plus their owned strings) just so the caller
+    // and attachments Vecs plus their owned strings) just so the caller
     // can walk one field of it after the fact.
-    let approved_patches: Vec<_> = approved_patches_from_verdict(&verdict).collect();
+    let approved_attachments: Vec<_> = approved_patches_from_verdict(&verdict).collect();
     let id = submit_verdict_and_wait(client, session_id, verdict).await?;
-    Ok((id, final_policy, approved_patches))
+    Ok((id, final_policy, approved_attachments))
 }
 
-/// Collect the sandbox destinations of every `Approved` patch
-/// verdict — the daemon-side patches the client just approved and
+/// Collect the sandbox destinations of every `Approved` attachment
+/// verdict — the daemon-side attachments the client just approved and
 /// now needs to upload. `Ignored`/`Denied` verdicts contribute
 /// nothing to the composition, so they're not uploaded.
 pub(crate) fn approved_patches_from_verdict(
     verdict: &boxes::wire::request::ContributionVerdict,
 ) -> impl Iterator<Item = (std::path::PathBuf, paths::SandboxRelPath)> + '_ {
-    verdict.patches.iter().filter_map(|v| match v {
+    verdict.attachments.iter().filter_map(|v| match v {
         boxes::wire::policy::WirePatchVerdict::Approved {
             host_path,
             destination,
@@ -1180,7 +1180,7 @@ pub(crate) async fn send_abort(client: &mut client::Client, session_id: boxes::S
 }
 
 /// Best-effort destroy for a `Materializing` session the client
-/// couldn't finalize (patch upload failed, network blip, etc.).
+/// couldn't finalize (attachment upload failed, network blip, etc.).
 /// Unlike `AbortSession`, `DestroySession` works on any status
 /// past `Pending`. Errors are logged, not propagated — the caller
 /// is already reporting a primary error.
@@ -1359,7 +1359,7 @@ fn shared_port_collision_warning(collision: &minimald_rpc::SharedPortCollision) 
     )
 }
 
-/// Upload the composition's patches and external hook scripts (if
+/// Upload the composition's attachments and external hook scripts (if
 /// any) and finalize the session. The session is `Materializing` at
 /// entry; `Active` on success. On upload/finalize failure the session
 /// is left in `Materializing` — the caller is responsible for
@@ -1367,7 +1367,7 @@ fn shared_port_collision_warning(collision: &minimald_rpc::SharedPortCollision) 
 ///
 /// Both uploads precede `FinalizeSession`, which gates on each
 /// upload's ready-marker: a session must not become attachable while
-/// either its patches or its hook scripts are still missing from the
+/// either its attachments or its hook scripts are still missing from the
 /// daemon.
 ///
 /// `hook_budget` is the summed declared timeout of the composition's
@@ -1377,14 +1377,14 @@ fn shared_port_collision_warning(collision: &minimald_rpc::SharedPortCollision) 
 pub(crate) async fn upload_and_finalize(
     client: &mut client::Client,
     session_id: boxes::SessionId,
-    patches: &[(std::path::PathBuf, paths::SandboxRelPath)],
+    attachments: &[(std::path::PathBuf, paths::SandboxRelPath)],
     hook_scripts: &[boxes::client::hookscripts::StagedScript],
     hook_budget: std::time::Duration,
 ) -> Result<(), anyhow::Error> {
     client
-        .upload_patches(session_id, patches)
+        .upload_attachments(session_id, attachments)
         .await
-        .context("Failed to upload composition patches")?;
+        .context("Failed to upload attachments")?;
 
     client
         .upload_hook_scripts(session_id, hook_scripts)

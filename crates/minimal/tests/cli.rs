@@ -811,12 +811,12 @@ async fn activate_uploads_project_files() {
 }
 
 /// A dashboard create (`min dash`, the `n` form) whose loadout carries a
-/// patch comes up `Active`: the TUI's activate uploads the composition's
-/// patches between `ConfigureLoadout` and `FinalizeSession`, as `min session
+/// attachment comes up `Active`: the TUI's activate uploads the composition's
+/// attachments between `ConfigureLoadout` and `FinalizeSession`, as `min session
 /// activate` does. Without that upload the daemon's finalize gate refuses
-/// the session ("patches upload never completed") and the create fails.
+/// the session ("attachments upload never completed") and the create fails.
 #[tokio::test]
-async fn dashboard_activate_uploads_loadout_patches() {
+async fn dashboard_activate_uploads_loadout_attachments() {
     let (daemon, args) = setup().await;
 
     let project = tempfile::TempDir::new().unwrap();
@@ -827,13 +827,14 @@ async fn dashboard_activate_uploads_loadout_patches() {
     )
     .unwrap();
     let loadout_dir = tempfile::TempDir::new().unwrap();
-    let patch_source = loadout_dir.path().join("gitconfig");
-    std::fs::write(&patch_source, "[user]\n\tname = dash\n").unwrap();
+    let attachment_source = loadout_dir.path().join("gitconfig");
+    std::fs::write(&attachment_source, "[user]\n\tname = dash\n").unwrap();
 
     let contribution = boxes::wire::request::WireContribution {
-        patches: vec![boxes::wire::primitives::WireSessionPatch {
-            patch: boxes::wire::primitives::WireResolvedPatch {
-                host_path: paths::HostAbsPath::try_new(patch_source.to_str().unwrap()).unwrap(),
+        attachments: vec![boxes::wire::primitives::WireSessionAttachment {
+            attachment: boxes::wire::primitives::WireResolvedAttachment {
+                host_path: paths::HostAbsPath::try_new(attachment_source.to_str().unwrap())
+                    .unwrap(),
                 destination: paths::SandboxRelPath::try_new(".gitconfig").unwrap(),
             },
             source: boxes::wire::primitives::WireSource::UserLoadout {
@@ -868,7 +869,7 @@ async fn dashboard_activate_uploads_loadout_patches() {
         inputs,
     )
     .await
-    .expect("a patch-carrying dashboard create finalizes");
+    .expect("an attachment-carrying dashboard create finalizes");
 
     let mut client = daemon.server.connect().await;
     use minimald_rpc::ListSessions;
@@ -4645,7 +4646,7 @@ async fn create_session_with(
         }
     };
     // Configure the loadout, then finalize — the workspace is
-    // empty so the composition has no patches and Finalize takes
+    // empty so the composition has no attachments and Finalize takes
     // the empty-composition short-circuit past the marker check.
     match client
         .call::<ConfigureLoadout>(&ConfigureLoadoutRequest {

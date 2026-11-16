@@ -1,35 +1,35 @@
 //! Free-function helper cluster for [`super`]'s session implementation:
-//! patch materialization, lifecycle-hook running and logging, composition
+//! attachment materialization, lifecycle-hook running and logging, composition
 //! loading, name registration, and the inherited-environment builder.
 
 use super::*;
 
-/// Copy every `composition.patches()` entry from the staged
-/// `<workspace>/patches/<dest>` into the session's home dir at
+/// Copy every `composition.attachments()` entry from the staged
+/// `<workspace>/attachments/<dest>` into the session's home dir at
 /// the same relative path. Called once by [`BoxActor::finalize`]
 /// when the session goes `Active`; subsequent attaches see the
 /// populated home without re-copying.
 ///
-/// Parent dirs are created as needed. A missing staged patch
+/// Parent dirs are created as needed. A missing staged attachment
 /// surfaces as an `io::Error` — the FinalizeSession precondition
-/// checked the patches-ready marker, so a missing file at this
+/// checked the attachments-ready marker, so a missing file at this
 /// point is a bug (the marker was written but the file it should
 /// have gated on didn't land).
 ///
 /// The copy is `fs::copy` specifically because it carries the source's
 /// permission bits across, which is the last link in the chain that
-/// keeps a patched script executable in the session (the unpacker set
+/// keeps a copied script executable in the session (the unpacker set
 /// those bits on the staged file from the tar header). A hand-rolled
-/// read-then-write here would silently flatten every patch to the
+/// read-then-write here would silently flatten every attachment to the
 /// daemon's umask default.
-pub(crate) async fn materialize_patches_into_home(
-    patches_dir: &DaemonAbsPath,
+pub(crate) async fn materialize_attachments_into_home(
+    attachments_dir: &DaemonAbsPath,
     home_dir: &DaemonAbsPath,
     composition: &Composition,
 ) -> Result<(), std::io::Error> {
-    for sp in composition.patches() {
-        let dest = sp.patch().destination().as_utf8_path();
-        let src = patches_dir.as_utf8_path().join(dest);
+    for sp in composition.attachments() {
+        let dest = sp.attachment().destination().as_utf8_path();
+        let src = attachments_dir.as_utf8_path().join(dest);
         let target = home_dir.as_utf8_path().join(dest);
         if let Some(parent) = target.parent() {
             tokio::fs::create_dir_all(parent.as_std_path()).await?;
@@ -40,7 +40,7 @@ pub(crate) async fn materialize_patches_into_home(
                 std::io::Error::new(
                     e.kind(),
                     format!(
-                        "materializing patch {} → {}: {e}",
+                        "materializing attachment {} → {}: {e}",
                         src.as_str(),
                         target.as_str()
                     ),

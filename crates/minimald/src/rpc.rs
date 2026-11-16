@@ -1338,9 +1338,9 @@ async fn serve_submit_verdict(
 }
 
 /// `FinalizeSession`: promotes a `Materializing` session to
-/// `Active`. Gated on the patches-ready marker being present
-/// under `<workspace>/patches/`; a missing marker (client crashed
-/// mid-upload, or skipped the patches upload entirely) surfaces
+/// `Active`. Gated on the attachments-ready marker being present
+/// under `<workspace>/attachments/`; a missing marker (client crashed
+/// mid-upload, or skipped the attachments upload entirely) surfaces
 /// as `Errorable::Err`. Idempotent on already-Active sessions.
 async fn serve_finalize_session(
     s: ServerStateHandle,
@@ -2764,16 +2764,22 @@ async fn read_channel_request<T: serde::de::DeserializeOwned>(
 pub(crate) const STREAM_WORKSPACE_FILES: &str =
     constcat::concat!(RPC_SUBSYSTEM_PREFIX, "WorkspaceFilesTarZst");
 
-pub(crate) const STREAM_WORKSPACE_PATCHES: &str =
+pub(crate) const STREAM_WORKSPACE_ATTACHMENTS: &str =
+    constcat::concat!(RPC_SUBSYSTEM_PREFIX, "WorkspaceAttachmentsTarZst");
+
+/// The name [`STREAM_WORKSPACE_ATTACHMENTS`] had before the rename. Served
+/// the same way, for a `min` of an earlier release run with
+/// `MINIMAL_ALLOW_VERSION_SKEW`.
+pub(crate) const STREAM_WORKSPACE_ATTACHMENTS_OLD: &str =
     constcat::concat!(RPC_SUBSYSTEM_PREFIX, "WorkspacePatchesTarZst");
 
-/// Marker file the patches unpacker drops after a successful
+/// Marker file the attachments unpacker drops after a successful
 /// atomic swap. `FinalizeSession` checks for its presence before
 /// promoting a session from `Materializing` to `Active`, so a
 /// client-side crash between upload and finalize can't leave the
-/// session `Active` without patches on disk. See the "why the
+/// session `Active` without attachments on disk. See the "why the
 /// marker exists" note in `finalize_session_handler`.
-pub(crate) const PATCHES_READY_MARKER: &str = ".patches_ready";
+pub(crate) const ATTACHMENTS_READY_MARKER: &str = ".attachments_ready";
 
 pub(crate) const STREAM_WORKSPACE_HOOK_SCRIPTS: &str =
     constcat::concat!(RPC_SUBSYSTEM_PREFIX, "WorkspaceHookScriptsTarZst");
@@ -2792,18 +2798,18 @@ pub(crate) const HOOKS_READY_MARKER: &str = ".hooks_ready";
 /// legitimate use.
 const MAX_HOOK_SCRIPT_BYTES: u64 = 1024 * 1024;
 
-/// Per-entry size cap on incoming patch archives. Legitimate patch files are
+/// Per-entry size cap on incoming attachment archives. Legitimate attachment files are
 /// dotfiles (KB to a few MB); this ceiling is generous but bounded so a peer
 /// forging a tar header can't push `Vec::with_capacity` into an allocation
 /// error (panic → task abort) or trigger the allocator's OOM handler
 /// (aborts the whole daemon).
-const MAX_PATCH_ENTRY_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_ATTACHMENT_ENTRY_BYTES: u64 = 1024 * 1024 * 1024;
 
-/// Total bytes held in memory across every in-flight patch write in a single
-/// `WorkspacePatchesTarZst` unpack. The per-entry cap alone isn't a memory
+/// Total bytes held in memory across every in-flight attachment write in a single
+/// `WorkspaceAttachmentsTarZst` unpack. The per-entry cap alone isn't a memory
 /// bound — the concurrency knob multiplies through it, so on a many-core
 /// host without this the ceiling would be tens of GiB. Fixed at 1 GiB
-/// regardless of core count: legitimate patch payloads are small dotfile
+/// regardless of core count: legitimate attachment payloads are small dotfile
 /// trees; the ceiling exists as an adversarial-input backstop, not as a
 /// throughput knob.
 const MAX_UNPACK_INFLIGHT_BYTES: usize = 1024 * 1024 * 1024;
@@ -2928,12 +2934,12 @@ async fn serve_stream_workspace_files(
     outcome
 }
 
-async fn serve_stream_workspace_patches(
+async fn serve_stream_workspace_attachments(
     s: ServerStateHandle,
     config: ChannelConfig,
     mut c: RuChannel<Msg>,
 ) -> Result<(), ConnectionError> {
-    let outcome = match unpack_workspace_patches(&s, &config, &mut c).await {
+    let outcome = match unpack_workspace_attachments(&s, &config, &mut c).await {
         Ok(()) => Ok(()),
         Err(msg) => {
             let _ = c.extended_data_bytes(1, msg.clone()).await;
@@ -3107,7 +3113,7 @@ struct UnpackTarget {
     /// Serializes the swap against another upload on the same stream
     /// and session.
     lock: Arc<tokio::sync::Mutex<()>>,
-    /// Noun for error messages — "patch", "hook script".
+    /// Noun for error messages — "attachment", "hook script".
     label: &'static str,
 }
 
@@ -3125,8 +3131,8 @@ struct UnpackTarget {
 /// a peer writing raw tar bytes bypasses every client-side layer.
 ///
 /// Each entry's **permission bits** are reproduced on disk, masked to
-/// the standard nine. That is what carries a patched script's exec bit
-/// and a patched secret's `0600` into the session; ownership is not
+/// the standard nine. That is what carries a copied script's exec bit
+/// and a copied secret's `0600` into the session; ownership is not
 /// carried at all — every file here belongs to the daemon, and the
 /// sandbox's user namespace maps that to the session user.
 ///
@@ -3239,7 +3245,7 @@ async fn unpack_tar_zst_into(target: UnpackTarget, c: &mut RuChannel<Msg>) -> Re
             }
             // Reject an entry that would clobber the ready marker.
             // Marker + uploaded file would otherwise race, and for
-            // patches `materialize_patches_into_home` would silently
+            // attachments `materialize_attachments_into_home` would silently
             // copy the emptied marker into the sandbox home, zeroing
             // whatever the user had there.
             if entry_path == StdPath::new(marker) {
@@ -3276,8 +3282,8 @@ async fn unpack_tar_zst_into(target: UnpackTarget, c: &mut RuChannel<Msg>) -> Re
             }
             let entry_size = entry.header().size().unwrap_or(0);
             // The entry's permission bits, which the write below
-            // reproduces on disk: a patched script has to stay
-            // executable and a patched secret has to stay unreadable
+            // reproduces on disk: a copied script has to stay
+            // executable and a copied secret has to stay unreadable
             // to anyone else, and neither survives a hardcoded mode.
             //
             // Masked to the standard nine. setuid/setgid/sticky are
@@ -3484,26 +3490,26 @@ async fn unpack_tar_zst_into(target: UnpackTarget, c: &mut RuChannel<Msg>) -> Re
     Ok(())
 }
 
-/// Unpacks the composition-patches tarball streamed over `c` into
-/// `<workspace>/patches/`, keyed by each patch's sandbox-home-relative
+/// Unpacks the composition-attachments tarball streamed over `c` into
+/// `<workspace>/attachments/`, keyed by each attachment's sandbox-home-relative
 /// destination. See [`unpack_tar_zst_into`] for the mechanics.
-async fn unpack_workspace_patches(
+async fn unpack_workspace_attachments(
     s: &ServerStateHandle,
     config: &ChannelConfig,
     c: &mut RuChannel<Msg>,
 ) -> Result<(), String> {
     let (session_handle, paths) = upload_session_handle(s, config).await?;
     let lock = session_handle
-        .patches_upload_lock()
+        .attachments_upload_lock()
         .await
         .map_err(|e| format!("session is gone: {e}"))?;
     unpack_tar_zst_into(
         UnpackTarget {
-            dir: paths.patches.as_utf8_path().as_std_path().to_path_buf(),
-            marker: PATCHES_READY_MARKER,
-            max_entry_bytes: MAX_PATCH_ENTRY_BYTES,
+            dir: paths.attachments.as_utf8_path().as_std_path().to_path_buf(),
+            marker: ATTACHMENTS_READY_MARKER,
+            max_entry_bytes: MAX_ATTACHMENT_ENTRY_BYTES,
             lock,
-            label: "patch",
+            label: "attachment",
         },
         c,
     )
@@ -3616,7 +3622,8 @@ pub async fn handle_ssh_rpc(
         | GetSessionScreen::NAME
         | GetMeshStatus::NAME
         | STREAM_WORKSPACE_FILES
-        | STREAM_WORKSPACE_PATCHES
+        | STREAM_WORKSPACE_ATTACHMENTS
+        | STREAM_WORKSPACE_ATTACHMENTS_OLD
         | STREAM_WORKSPACE_HOOK_SCRIPTS
         | minimald_rpc::DIAG_BUNDLE_SUBSYSTEM
         | minimald_rpc::CLEAN_CACHE_SUBSYSTEM
@@ -3711,7 +3718,9 @@ pub async fn handle_ssh_rpc(
         GetSessionScreen::NAME => serve!(serve_get_session_screen(s, channel)),
         GetMeshStatus::NAME => serve!(serve_get_mesh_status(s, channel)),
         STREAM_WORKSPACE_FILES => serve!(serve_stream_workspace_files(s, config, channel)),
-        STREAM_WORKSPACE_PATCHES => serve!(serve_stream_workspace_patches(s, config, channel)),
+        STREAM_WORKSPACE_ATTACHMENTS | STREAM_WORKSPACE_ATTACHMENTS_OLD => {
+            serve!(serve_stream_workspace_attachments(s, config, channel))
+        }
         STREAM_WORKSPACE_HOOK_SCRIPTS => {
             serve!(serve_stream_workspace_hook_scripts(s, config, channel))
         }
@@ -4026,7 +4035,7 @@ mod read_log_tests {
             working: paths::sub_path!(root, "tree"),
             cache: paths::sub_path!(root, "cache"),
             home: paths::sub_path!(root, "home"),
-            patches: paths::sub_path!(root, "patches"),
+            attachments: paths::sub_path!(root, "attachments"),
             hooks: paths::sub_path!(root, "hooks"),
         }
     }
@@ -4036,7 +4045,7 @@ mod read_log_tests {
             &paths.working,
             &paths.cache,
             &paths.home,
-            &paths.patches,
+            &paths.attachments,
             &paths.hooks,
         ]
     }

@@ -2550,7 +2550,7 @@ pub struct ConfigureLoadoutRequest {
 /// `SubmitVerdict`).
 ///
 /// In both `Materialized` branches the client still has to upload
-/// patches and call `FinalizeSession` before the session is
+/// attachments and call `FinalizeSession` before the session is
 /// attachable.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -2558,7 +2558,7 @@ pub enum ConfigureLoadoutResponse {
     /// No items need user gating; composition is complete and the
     /// session record has advanced to
     /// [`Materializing`](boxes::BoxState::Materializing).
-    /// The client still has to upload the composition's patches
+    /// The client still has to upload the composition's attachments
     /// and call `FinalizeSession` before the session becomes
     /// attachable.
     Materialized,
@@ -2579,17 +2579,17 @@ impl OneshotSshRpc for ConfigureLoadout {
 
 /// An RPC to promote a `Materializing` session to `Active`.
 ///
-/// The client uploads composition patches to the daemon via
-/// `WorkspacePatchesTarZst`, then calls this RPC to signal "every
+/// The client uploads composition attachments to the daemon via
+/// `WorkspaceAttachmentsTarZst`, then calls this RPC to signal "every
 /// side-channel upload is in and I'm ready for the session to be
-/// attachable." The daemon checks for the patches-ready marker
-/// under `<workspace>/patches/` and refuses to finalize if the
+/// attachable." The daemon checks for the attachments-ready marker
+/// under `<workspace>/attachments/` and refuses to finalize if the
 /// upload never completed.
 ///
 /// Idempotent: calling on an already-`Active` session returns
 /// success. Refused with `InvalidInput` on `Pending` sessions
 /// (configure the loadout first) or `Materializing` sessions
-/// missing the patches marker.
+/// missing the attachments marker.
 pub struct FinalizeSession;
 
 /// The request for a [`FinalizeSession`] RPC.
@@ -3433,7 +3433,7 @@ impl OneshotSshRpc for Shutdown {
 /// [`ContributionVerdict`]. The daemon promotes the record
 /// `Pending → Materializing` and replies with
 /// [`BoxStep::Materialized`](boxes::wire::request::BoxStep::Materialized);
-/// the client still has to upload patches and call
+/// the client still has to upload attachments and call
 /// `FinalizeSession` before the session is attachable.
 /// A `Fault` reply carries a structured
 /// [`WireError`](boxes::wire::errors::WireError) —

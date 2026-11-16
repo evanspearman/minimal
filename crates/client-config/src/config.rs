@@ -124,8 +124,8 @@ pub struct LoadoutsConfig {
     /// new session unless the client overrides them.
     #[serde(default)]
     pub default_loadouts: Vec<String>,
-    /// When true, the patch walker follows symlinks while
-    /// enumerating loadout patch sources. Off by default — most
+    /// When true, the attachment walker follows symlinks while
+    /// enumerating loadout attachment sources. Off by default — most
     /// walks want the on-disk file, not a symlink target. Turn on
     /// when your dotfile tree is a symlink farm (stow / chezmoi /
     /// hand-linked) and you actually want the walk to descend

@@ -460,14 +460,14 @@ impl Eq for Stack {}
 
 /// Per-project session block. Contributes to sessions activated on
 /// this project — same primitives as
-/// [`boxes::core::loadout::Loadout`] (packages, vars, patches,
+/// [`boxes::core::loadout::Loadout`] (packages, vars, attachments,
 /// lifecycle hooks), scoped to the project rather than the user.
 ///
 /// Where a loadout says "what this developer wants everywhere"
 /// (their editor, their shell rc, their preferred `EDITOR`), a
 /// project session block says "what every session working on this
 /// codebase needs" (the toolchain everyone builds with, shared
-/// project config, env vars derived from the checkout). Patch
+/// project config, env vars derived from the checkout). Attachment
 /// sources typically resolve inside the repo, not the user's
 /// dotfiles.
 ///
@@ -485,8 +485,8 @@ impl Eq for Stack {}
 /// # Toolchain every contributor builds with.
 /// packages = ["rustc", "cargo", "postgresql-client"]
 ///
-/// # Config that lives in the repo, patched into the sandbox.
-/// patches = [
+/// # Config that lives in the repo, copied into the box.
+/// attachments = [
 ///     { dest = "~/.cargo/config.toml", source = "config/cargo.toml" },
 ///     { dest = "~/.psqlrc",            source = "config/psqlrc" },
 /// ]
@@ -516,15 +516,14 @@ pub struct Session {
     /// the rare case a non-POSIX name is necessary.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vars_lenient: Vec<boxes::core::primitives::LenientVarEntry>,
-    /// Attachments contributed by this project. Written `attachments`;
-    /// the old name `patches` is still read.
+    /// Attachments contributed by this project. The old name `patches` is
+    /// still read.
     #[serde(
         default,
-        rename = "attachments",
         alias = "patches",
-        skip_serializing_if = "boxes::core::primitives::Patches::is_empty"
+        skip_serializing_if = "boxes::core::primitives::Attachments::is_empty"
     )]
-    pub patches: boxes::core::primitives::Patches,
+    pub attachments: boxes::core::primitives::Attachments,
     /// Scripts run at session-level transition points, in
     /// declaration order (concatenated with any hooks from the
     /// client's loadout).
@@ -591,7 +590,7 @@ impl Session {
             packages,
             vars,
             vars_lenient,
-            patches,
+            attachments,
             lifecycle_hooks,
             // Proxy settings and grants are box policy, not composition
             // primitives: the client carries them on the box's policy.
@@ -602,7 +601,7 @@ impl Session {
         packages.is_empty()
             && vars.is_empty()
             && vars_lenient.is_empty()
-            && patches.is_empty()
+            && attachments.is_empty()
             && lifecycle_hooks.is_empty()
     }
 }
@@ -963,7 +962,7 @@ pub struct File {
     /// How this project reads the shared remote cache.
     #[serde(default)]
     pub cache: CacheSettings,
-    /// Project-level session contribution: packages, vars, patches,
+    /// Project-level session contribution: packages, vars, attachments,
     /// and lifecycle hooks that apply to every session activated on
     /// this project. Consumed by the `ProjectComposable` at
     /// `CreateSession` time.
@@ -3038,7 +3037,7 @@ mod tests {
     }
 
     /// A populated `[session]` block round-trips every primitive
-    /// domain a loadout carries — packages, strict vars, patches,
+    /// domain a loadout carries — packages, strict vars, attachments,
     /// lifecycle hooks — through the mfile's schema. The example
     /// content is deliberately project-flavored (build toolchain,
     /// in-repo config paths, uniform build env) to reflect the
@@ -3051,7 +3050,7 @@ mod tests {
             r#"
             [session]
             packages = ["rustc", "cargo", "postgresql-client"]
-            patches = [
+            attachments = [
                 { dest = "~/.cargo/config.toml", source = "config/cargo.toml" },
                 { dest = "~/.psqlrc",            source = "config/psqlrc" },
             ]
@@ -3072,7 +3071,7 @@ mod tests {
             vec!["rustc", "cargo", "postgresql-client"]
         );
         assert_eq!(session.vars.len(), 3);
-        assert_eq!(session.patches.len(), 2);
+        assert_eq!(session.attachments.len(), 2);
         assert_eq!(session.lifecycle_hooks.len(), 1);
     }
 
@@ -3085,7 +3084,7 @@ mod tests {
             b"[defaults.session]\npatches = [{ dest = \"a\", source = \"a\" }]\n",
         )
         .expect("the old key still reads");
-        assert_eq!(old.session.expect("session reads").patches.len(), 1);
+        assert_eq!(old.session.expect("session reads").attachments.len(), 1);
 
         for table in ["session", "defaults.session"] {
             let src = format!(

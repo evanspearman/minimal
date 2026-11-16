@@ -23,7 +23,7 @@ pub enum AttachError {
     /// still awaiting the client's contribution verdict
     /// (`SubmitVerdict` hasn't landed), or its composition
     /// finalized but the session is `Materializing` — the
-    /// client still owes a patches upload + `FinalizeSession`
+    /// client still owes a attachments upload + `FinalizeSession`
     /// before a shell can be minted.
     SessionPending,
     /// The session's `WorkspaceFilesTarZst` upload is still streaming, so
@@ -201,15 +201,15 @@ impl BoxActor {
         // the refusal below.
         //
         // The shortcut only works when the composition ends up with
-        // no patches. Patches require the client to run the
-        // `WorkspacePatchesTarZst` upload + `FinalizeSession`
+        // no attachments. Attachments require the client to run the
+        // `WorkspaceAttachmentsTarZst` upload + `FinalizeSession`
         // sequence, and this attach path has no way to obtain those
         // files — nothing on the daemon side reaches back to the
         // client to solicit an upload. If we ran `configure_loadout`
-        // and it produced patches, the record would be stuck at
+        // and it produced attachments, the record would be stuck at
         // `Materializing` with no path to `Active` and every
         // subsequent attach would hit the `SessionPending` refusal.
-        // So: run the configure, and if patches surfaced, roll the
+        // So: run the configure, and if attachments surfaced, roll the
         // in-memory state back to `Draft { pending: None }` (the
         // record's on-disk `Materializing` status still leaves it
         // reachable for `DestroySession`) and refuse the attach with
@@ -250,14 +250,14 @@ impl BoxActor {
             self.configure_loadout(WireContribution::default(), false)
                 .await
                 .map_err(AttachError::LoadoutFailed)?;
-            let has_patches = matches!(
+            let has_attachments = matches!(
                 &self.inner,
                 BoxInner::Active {
                     composition: Some(c),
                     ..
-                } if !c.patches().is_empty()
+                } if !c.attachments().is_empty()
             );
-            if has_patches {
+            if has_attachments {
                 // Refuse: this attach path can't run the
                 // upload + FinalizeSession sequence the composition
                 // requires. `finalize`'s per-op guard will refuse
@@ -267,18 +267,18 @@ impl BoxActor {
                 // the full flow.
                 return Err(AttachError::LoadoutFailed(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    "this session's configuration includes patches that only \
+                    "this session's configuration includes attachments that only \
                      `min session activate` can apply; destroy it with \
                      `min session destroy <session>`, then run \
                      `min session activate` again",
                 )));
             }
-            // No patches: finalize inline so the shortcut still
+            // No attachments: finalize inline so the shortcut still
             // yields an attachable session. The marker check inside
-            // `finalize` is gated on `!composition.patches().is_empty()`,
+            // `finalize` is gated on `!composition.attachments().is_empty()`,
             // so an empty composition doesn't need the dir + marker
             // to exist: `finalize` skips the check, `materialize`
-            // iterates zero patches, and the record is written as
+            // iterates zero attachments, and the record is written as
             // `Active`.
             self.finalize().await.map_err(AttachError::LoadoutFailed)?;
         }
@@ -316,7 +316,7 @@ impl BoxActor {
         session_keys: SessionKeys,
     ) -> Result<(), AttachError> {
         // Attach is gated on `Active` — a Materializing session has
-        // a composition but its patches may not be on disk yet,
+        // a composition but its attachments may not be on disk yet,
         // and materializing without them would produce a broken
         // sandbox rootfs. See [`BoxActor::finalize`] for the
         // transition.

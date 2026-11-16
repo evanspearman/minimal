@@ -129,10 +129,10 @@ const ATTACH_ENV_HOOK_BASH: &str = constcat::concat!(
 /// The second half of the bash rc: the user's own startup file.
 ///
 /// A session bash is started `--noprofile --rcfile <this file>`, so this is
-/// the only place a `~/.bashrc` patched into the session home can be reached
-/// from. Without it bash is the one shell whose startup file a loadout patch
+/// the only place a `~/.bashrc` copied into the session home can be reached
+/// from. Without it bash is the one shell whose startup file a loadout attachment
 /// cannot reach — zsh, fish, and nushell all read theirs out of the session
-/// home, which is where patches land, on their own.
+/// home, which is where attachments land, on their own.
 ///
 /// Sourced *after* the hook above, which is the ordering every other shell
 /// gets from its own vendor integration point (`/etc/zsh/zshrc` runs before
@@ -152,7 +152,7 @@ const ATTACH_ENV_HOOK_BASH: &str = constcat::concat!(
 /// login_shell` as off has no business running files whose whole purpose is
 /// once-per-login setup (agent startup, unguarded `PATH` prepends). A
 /// dotfiles tree that keeps its bash setup in `~/.bash_profile` reaches this
-/// shell by naming the patch `dest = ".bashrc"` — the destination is the
+/// shell by naming the attachment `dest = ".bashrc"` — the destination is the
 /// user's to choose, unlike the layout of a real home directory.
 const ATTACH_ENV_BASH_USER_RC: &str = r#"# minimal: user startup file
 if [ -n "${HOME:-}" ] && [ -r "$HOME/.bashrc" ]; then
@@ -966,7 +966,7 @@ fn install_min_helpers(rootfs: &Path) -> std::io::Result<()> {
 ///
 /// These live in the *rootfs*, at each shell's own vendor/system integration
 /// point, for two reasons. They are outside the session home, which is where
-/// loadout patches land — so nothing a loadout does can collide with them or
+/// loadout attachments land — so nothing a loadout does can collide with them or
 /// remove them. And they are installed by the daemon for every session, so no
 /// loadout or project author has to know the mechanism exists, which a
 /// composed `PROMPT_COMMAND` recipe would have required.
@@ -4541,7 +4541,7 @@ mod tests {
     /// shell we support, at that shell's own vendor/system integration point
     /// — installed by the daemon, so no loadout or project author has to know
     /// the mechanism exists, and outside the session home, so no loadout
-    /// patch can collide with one.
+    /// attachment can collide with one.
     #[test]
     fn every_session_rootfs_carries_the_attach_env_hooks() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4671,7 +4671,7 @@ mod tests {
 
     /// The point of the whole file: a `~/.bashrc` patched into the session
     /// home runs, and runs *after* the daemon's hook is in place — so the
-    /// same `dest = ".bashrc"` patch that works for `.zshrc` and
+    /// same `dest = ".bashrc"` attachment that works for `.zshrc` and
     /// `config.fish` works for bash.
     #[test]
     fn a_patched_bashrc_is_sourced_after_the_hook() {
@@ -4723,7 +4723,7 @@ mod tests {
 
     /// And a home carrying *only* a login-chain file gets nothing — the same
     /// silence `docker exec -it … bash` or a Linux terminal emulator gives
-    /// it. The fix is the patch's `dest`, which is the user's to name.
+    /// it. The fix is the attachment's `dest`, which is the user's to name.
     #[test]
     fn a_login_chain_file_alone_is_not_a_bashrc() {
         for file in [".bash_profile", ".bash_login", ".profile"] {

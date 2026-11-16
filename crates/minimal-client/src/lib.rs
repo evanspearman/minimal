@@ -160,7 +160,7 @@ pub fn add_wait_spinner_bar(msg: &'static str) -> indicatif::ProgressBar {
 /// Add a file-count progress bar to the process-global `MultiProgress`.
 /// Same insertion-before-configuration rationale as [`add_spinner_bar`].
 ///
-/// Bar rendering: a leading `▗` followed by up to [`PATCHES_BAR_TAIL_UNITS`]
+/// Bar rendering: a leading `▗` followed by up to [`ATTACHMENTS_BAR_TAIL_UNITS`]
 /// `" ▚"` units, growing left-to-right in proportion to `pos / len`.
 /// Sequence at increasing progress: `▗` → `▗ ▚ ▚` → `▗ ▚ ▚ ▚ ▚ ▚ ▚ ▚ ▚ ▚`
 /// → `▗ ▚ ▚ …`. Indicatif's built-in `{wide_bar}` renders one glyph per
@@ -168,16 +168,16 @@ pub fn add_wait_spinner_bar(msg: &'static str) -> indicatif::ProgressBar {
 /// registers a custom `{tail}` key and formats the string ourselves.
 /// The un-filled tail is padded with `"  "` (matching the width of a
 /// `" ▚"` unit) so `{pos}/{len}` etc. stay in a fixed column.
-fn add_patches_bar(total: u64) -> indicatif::ProgressBar {
+fn add_attachments_bar(total: u64) -> indicatif::ProgressBar {
     /// Max number of `" ▚"` units at 100 % progress. Widen for a
     /// longer bar; narrow for tighter terminals.
-    const PATCHES_BAR_TAIL_UNITS: usize = 30;
+    const ATTACHMENTS_BAR_TAIL_UNITS: usize = 30;
 
     let bar = ot::global_progress().add(indicatif::ProgressBar::hidden());
     bar.set_length(total);
     bar.set_style(
         indicatif::ProgressStyle::with_template(
-            "  {msg} {tail} {pos}/{len} patches ({per_sec}, {eta})",
+            "  {msg} {tail} {pos}/{len} attachments ({per_sec}, {eta})",
         )
         .expect("valid template")
         .with_key(
@@ -189,20 +189,20 @@ fn add_patches_bar(total: u64) -> indicatif::ProgressBar {
                     .map(|len| (state.pos() as f64) / (len as f64))
                     .unwrap_or(0.0)
                     .clamp(0.0, 1.0);
-                let filled = (progress * PATCHES_BAR_TAIL_UNITS as f64).round() as usize;
+                let filled = (progress * ATTACHMENTS_BAR_TAIL_UNITS as f64).round() as usize;
                 let _ = w.write_str("▗");
                 for _ in 0..filled {
                     let _ = w.write_str(" ▚");
                 }
                 // Pad each un-filled unit with two spaces so total
                 // rendered width stays constant across the animation.
-                for _ in 0..(PATCHES_BAR_TAIL_UNITS - filled) {
+                for _ in 0..(ATTACHMENTS_BAR_TAIL_UNITS - filled) {
                     let _ = w.write_str("  ");
                 }
             },
         ),
     );
-    bar.set_message("Uploading composition patches");
+    bar.set_message("Uploading attachments");
     bar
 }
 
@@ -758,17 +758,17 @@ impl Client {
         .await
     }
 
-    /// Stream a zstd-compressed tarball of composition patches to the
-    /// daemon's `WorkspacePatchesTarZst` subsystem, which unpacks
-    /// each entry under `<workspace>/patches/<destination>`. The
+    /// Stream a zstd-compressed tarball of composition attachments to the
+    /// daemon's `WorkspaceAttachmentsTarZst` subsystem, which unpacks
+    /// each entry under `<workspace>/attachments/<destination>`. The
     /// launcher reads from that tree when materializing the session's
     /// sandbox home.
     ///
-    /// `patches` is a list of `(host_path, sandbox_destination)`
+    /// `attachments` is a list of `(host_path, sandbox_destination)`
     /// pairs pulled from the finalized [`Composition`]. An empty
     /// list is a no-op — no channel is opened. Callers dedup by
     /// destination first; the composer's post-gate
-    /// `check_patch_mismatches` guarantees no two Approved verdicts
+    /// `check_attachment_mismatches` guarantees no two Approved verdicts
     /// share a destination with different sources, so any duplicates
     /// here are exact matches and safe to collapse.
     ///
@@ -777,60 +777,66 @@ impl Client {
     /// arriving as a link into a store the sandbox doesn't have.
     ///
     /// Each entry carries **the source file's own permission bits**.
-    /// The exec bit is the reason — a script patched into the session
+    /// The exec bit is the reason — a script copied into the session
     /// has to still be runnable — but preservation is exact, so a
     /// read-only source (a store path, a `0400` secret) lands read-only
     /// and takes a `chmod` to edit in the box. The daemon masks off
     /// setuid/setgid/sticky on unpack.
     ///
     /// [`Composition`]: boxes::core::compose::Composition
-    pub async fn upload_patches(
+    pub async fn upload_attachments(
         &mut self,
         session_id: boxes::SessionId,
-        patches: &[(std::path::PathBuf, paths::SandboxRelPath)],
+        attachments: &[(std::path::PathBuf, paths::SandboxRelPath)],
     ) -> Result<(), anyhow::Error> {
-        if patches.is_empty() {
+        if attachments.is_empty() {
             return Ok(());
         }
         // File-count bar: we know the target up front, so the operator
-        // sees "N/M patches" instead of a spinner. Incremented inside
+        // sees "N/M attachments" instead of a spinner. Incremented inside
         // the tar loop after each `add_file` returns — the file is
         // fully queued into the encoder at that point, even if it
         // hasn't been fully compressed or shipped yet.
-        let bar = add_patches_bar(patches.len() as u64);
-        let result = self.upload_patches_with(session_id, patches, &bar).await;
+        let bar = add_attachments_bar(attachments.len() as u64);
+        let result = self
+            .upload_attachments_with(session_id, attachments, &bar)
+            .await;
         bar.finish_and_clear();
         result
     }
 
-    /// [`Self::upload_patches`] without terminal progress output.
+    /// [`Self::upload_attachments`] without terminal progress output.
     /// For callers that own the screen themselves (the `min dash` TUI),
     /// where a progress bar would corrupt the frame.
-    pub async fn upload_patches_quiet(
+    pub async fn upload_attachments_quiet(
         &mut self,
         session_id: boxes::SessionId,
-        patches: &[(std::path::PathBuf, paths::SandboxRelPath)],
+        attachments: &[(std::path::PathBuf, paths::SandboxRelPath)],
     ) -> Result<(), anyhow::Error> {
-        if patches.is_empty() {
+        if attachments.is_empty() {
             return Ok(());
         }
         // A hidden bar that is never added to the global MultiProgress
         // renders nowhere; the upload loop still gets its counter.
         let bar = indicatif::ProgressBar::hidden();
-        self.upload_patches_with(session_id, patches, &bar).await
+        self.upload_attachments_with(session_id, attachments, &bar)
+            .await
     }
 
-    async fn upload_patches_with(
+    async fn upload_attachments_with(
         &mut self,
         session_id: boxes::SessionId,
-        patches: &[(std::path::PathBuf, paths::SandboxRelPath)],
+        attachments: &[(std::path::PathBuf, paths::SandboxRelPath)],
         bar: &indicatif::ProgressBar,
     ) -> Result<(), anyhow::Error> {
         let bar_for_loop = bar.clone();
         self.stream_upload(
             session_id,
-            constcat::concat!(minimald_rpc::RPC_SUBSYSTEM_PREFIX, "WorkspacePatchesTarZst"),
-            "composition patch",
+            constcat::concat!(
+                minimald_rpc::RPC_SUBSYSTEM_PREFIX,
+                "WorkspaceAttachmentsTarZst"
+            ),
+            "attachment",
             async |writer| {
                 // Route through the pipe helper because SSH channel
                 // writers aren't Sync but `TarZstArchive` requires
@@ -850,7 +856,7 @@ impl Client {
                     // then error with "broken pipe" once the
                     // upstream file read has already failed).
                     let build_result: Result<(), anyhow::Error> = async {
-                        for (host_path, dest) in patches {
+                        for (host_path, dest) in attachments {
                             archive
                                 .add_file(
                                     host_path,
@@ -863,7 +869,7 @@ impl Client {
                                 .await
                                 .with_context(|| {
                                     format!(
-                                        "adding patch {} → {}",
+                                        "adding attachment {} → {}",
                                         host_path.display(),
                                         dest.as_str()
                                     )
@@ -898,11 +904,11 @@ impl Client {
     /// check for an all-inline composition.
     ///
     /// A separate stream from
-    /// [`upload_patches`](Self::upload_patches) rather than extra
-    /// entries in that archive: patch destinations are arbitrary
-    /// home-relative paths, so any prefix reserved inside the patch
+    /// [`upload_attachments`](Self::upload_attachments) rather than extra
+    /// entries in that archive: attachment destinations are arbitrary
+    /// home-relative paths, so any prefix reserved inside the attachment
     /// archive is one a user could legitimately claim, and the whole
-    /// patch tree is copied into the sandbox home at finalize — which
+    /// attachment tree is copied into the sandbox home at finalize — which
     /// is not where scripts belong.
     pub async fn upload_hook_scripts(
         &mut self,
@@ -925,7 +931,7 @@ impl Client {
                     // Always finalize, even on a build error:
                     // `async_tar::Builder` panics from `Drop` if
                     // dropped unfinished, and `?` here is not an
-                    // unwind. Same pattern as `upload_patches`.
+                    // unwind. Same pattern as `upload_attachments`.
                     let build_result: Result<(), anyhow::Error> = async {
                         for s in scripts {
                             archive
@@ -960,7 +966,7 @@ impl Client {
     }
 
     /// Common plumbing behind [`Self::upload_workspace_files`] and
-    /// [`Self::upload_patches`]: open a channel, set the session-id
+    /// [`Self::upload_attachments`]: open a channel, set the session-id
     /// env var, request a subsystem, drive `stream` over the
     /// channel's writer, wait for the daemon's channel close,
     /// surface any stderr the daemon relayed.
@@ -1464,40 +1470,46 @@ fn skew_override_set() -> bool {
     std::env::var_os(SKEW_OVERRIDE_VAR).is_some_and(|v| !v.is_empty())
 }
 
-/// The client-side patches of a loadout contribution as
+/// The client-side attachments of a loadout contribution as
 /// `(host path, sandbox destination)` upload pairs, for
-/// [`Client::upload_patches`].
+/// [`Client::upload_attachments`].
 ///
 /// Collect them *before* the contribution moves into the
 /// `ConfigureLoadout` RPC: they land in the final composition whether
 /// the response is `Materialized` or `Pending`, so the client is
 /// authoritative for them. Every activate path — `min session
 /// activate`, `min task run`, the `min dash` create — collects through
-/// this one function, then [`dedup_patch_uploads`] before the upload.
+/// this one function, then [`dedup_attachment_uploads`] before the upload.
 #[must_use]
-pub fn contribution_patch_uploads(
+pub fn contribution_attachment_uploads(
     contribution: &boxes::wire::request::WireContribution,
 ) -> Vec<(std::path::PathBuf, paths::SandboxRelPath)> {
     contribution
-        .patches
+        .attachments
         .iter()
         .map(|p| {
             (
-                p.patch.host_path.as_utf8_path().as_std_path().to_path_buf(),
-                p.patch.destination.clone(),
+                p.attachment
+                    .host_path
+                    .as_utf8_path()
+                    .as_std_path()
+                    .to_path_buf(),
+                p.attachment.destination.clone(),
             )
         })
         .collect()
 }
 
-/// Sort patch upload pairs by sandbox destination and collapse
+/// Sort attachment upload pairs by sandbox destination and collapse
 /// same-destination duplicates. Dedup by destination, not host path:
 /// two loadouts may name the same destination, and the composer's
 /// post-gate check guarantees such duplicates are exact matches (same
 /// source), so collapsing is safe.
-pub fn dedup_patch_uploads(patches: &mut Vec<(std::path::PathBuf, paths::SandboxRelPath)>) {
-    patches.sort_by(|a, b| a.1.as_str().cmp(b.1.as_str()));
-    patches.dedup_by(|a, b| a.1.as_str() == b.1.as_str());
+pub fn dedup_attachment_uploads(
+    attachments: &mut Vec<(std::path::PathBuf, paths::SandboxRelPath)>,
+) {
+    attachments.sort_by(|a, b| a.1.as_str().cmp(b.1.as_str()));
+    attachments.dedup_by(|a, b| a.1.as_str() == b.1.as_str());
 }
 
 /// This CLI's build, to be asserted by an RPC that acts before it replies —
@@ -2420,11 +2432,11 @@ mod tests {
         );
     }
 
-    /// A wire patch from a user loadout, as `compose_user_contribution`
+    /// A wire attachment from a user loadout, as `compose_user_contribution`
     /// emits one.
-    fn wire_patch(host: &str, dest: &str) -> boxes::wire::primitives::WireSessionPatch {
-        boxes::wire::primitives::WireSessionPatch {
-            patch: boxes::wire::primitives::WireResolvedPatch {
+    fn wire_attachment(host: &str, dest: &str) -> boxes::wire::primitives::WireSessionAttachment {
+        boxes::wire::primitives::WireSessionAttachment {
+            attachment: boxes::wire::primitives::WireResolvedAttachment {
                 host_path: paths::HostAbsPath::try_new(host).unwrap(),
                 destination: paths::SandboxRelPath::try_new(dest).unwrap(),
             },
@@ -2435,40 +2447,42 @@ mod tests {
     }
 
     /// The shared collection every activate path uploads from: each wire
-    /// patch maps to its `(host path, sandbox destination)` pair, the pairs
+    /// attachment maps to its `(host path, sandbox destination)` pair, the pairs
     /// sort by destination, and same-destination duplicates collapse. A
-    /// composition without patches collects nothing, so its upload is a
+    /// composition without attachments collects nothing, so its upload is a
     /// no-op.
     #[test]
-    fn patch_uploads_map_sort_and_dedup_by_destination() {
+    fn attachment_uploads_map_sort_and_dedup_by_destination() {
         let contribution = boxes::wire::request::WireContribution {
-            patches: vec![
-                wire_patch("/tmp/first.patch", "zeta/first.patch"),
-                wire_patch("/tmp/second.patch", "alpha/second.patch"),
-                wire_patch("/tmp/third.patch", "alpha/second.patch"),
+            attachments: vec![
+                wire_attachment("/tmp/first.attachment", "zeta/first.attachment"),
+                wire_attachment("/tmp/second.attachment", "alpha/second.attachment"),
+                wire_attachment("/tmp/third.attachment", "alpha/second.attachment"),
             ],
             ..Default::default()
         };
-        let mut patches = super::contribution_patch_uploads(&contribution);
-        super::dedup_patch_uploads(&mut patches);
+        let mut attachments = super::contribution_attachment_uploads(&contribution);
+        super::dedup_attachment_uploads(&mut attachments);
         assert_eq!(
-            patches,
+            attachments,
             vec![
                 (
-                    std::path::PathBuf::from("/tmp/second.patch"),
-                    paths::SandboxRelPath::try_new("alpha/second.patch").unwrap(),
+                    std::path::PathBuf::from("/tmp/second.attachment"),
+                    paths::SandboxRelPath::try_new("alpha/second.attachment").unwrap(),
                 ),
                 (
-                    std::path::PathBuf::from("/tmp/first.patch"),
-                    paths::SandboxRelPath::try_new("zeta/first.patch").unwrap(),
+                    std::path::PathBuf::from("/tmp/first.attachment"),
+                    paths::SandboxRelPath::try_new("zeta/first.attachment").unwrap(),
                 ),
             ],
             "sorted by destination, duplicates collapsed"
         );
         assert!(
-            super::contribution_patch_uploads(&boxes::wire::request::WireContribution::default())
-                .is_empty(),
-            "a patchless composition uploads nothing"
+            super::contribution_attachment_uploads(
+                &boxes::wire::request::WireContribution::default()
+            )
+            .is_empty(),
+            "a composition without attachments uploads nothing"
         );
     }
 }
@@ -3007,7 +3021,7 @@ mod rpc_status_tests {
         let verdict = || boxes::wire::request::ContributionVerdict {
             session_id,
             vars: Vec::new(),
-            patches: Vec::new(),
+            attachments: Vec::new(),
             lifecycle_hooks: Vec::new(),
         };
         let body = |r: &Errorable<BoxStep>| serde_json_lenient::to_vec(r).unwrap();

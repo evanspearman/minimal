@@ -264,7 +264,7 @@ pub(crate) fn effective_session_policy(
 /// resolving names at first exec as it always has.
 ///
 /// Half the client's 60 s base: a warm cache evaluates in seconds, well
-/// inside it, and what follows the check in finalize — patch
+/// inside it, and what follows the check in finalize — attachment
 /// materialization, and the host mint an activate hook needs — keeps
 /// the other half of the base for itself.
 pub(crate) const PACKAGE_CHECK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
@@ -459,11 +459,11 @@ impl BoxActor {
                 // Compose finalized in one shot — the record is now
                 // `Materializing`, not yet `Active`. `Active` waits
                 // for `FinalizeSession` after the client has
-                // uploaded the composition's patches. Hostname
+                // uploaded the composition's attachments. Hostname
                 // registration is deferred to the same transition
                 // (a session isn't attachable until then, so
                 // publishing the route would let something reach a
-                // launcher that can't materialize its patches).
+                // launcher that can't materialize its attachments).
                 //
                 // Persist the composition snapshot before the record
                 // write so a crash at any point leaves either a
@@ -540,7 +540,7 @@ impl BoxActor {
         // write failure leaves both the record and the actor
         // `Draft`, so the client can re-submit the same verdict
         // once the store recovers. `Active` waits for a follow-up
-        // `FinalizeSession` after patches upload — see
+        // `FinalizeSession` after attachments upload — see
         // [`Self::finalize`] for the transition and its
         // preconditions.
         //
@@ -560,8 +560,8 @@ impl BoxActor {
     }
 
     /// Finalize a `Materializing` session: verify that the client
-    /// has uploaded its composition patches (marker present under
-    /// `<workspace>/patches/`), promote the record
+    /// has uploaded its composition attachments (marker present under
+    /// `<workspace>/attachments/`), promote the record
     /// `Materializing → Active`, and publish the PTask route so
     /// the session becomes attachable.
     ///
@@ -569,7 +569,7 @@ impl BoxActor {
     /// after a network blip that lost the ack) returns success
     /// without side effects. Refuses `Pending` or `Draft` sessions
     /// with `WrongState`; refuses `Materializing` sessions without
-    /// a patches-ready marker with a "patches upload never
+    /// a attachments-ready marker with a "attachments upload never
     /// finished" fault.
     pub(super) async fn finalize(
         &mut self,
@@ -591,9 +591,9 @@ impl BoxActor {
                 // restart survived the reap in `BoxManager::init`
                 // (delete failed, log-and-skip). Without the
                 // in-memory composition we can't tell whether the
-                // patches were uploaded; `has_patches` below would
+                // attachments were uploaded; `has_attachments` below would
                 // trivially match `false` and skip the marker
-                // check, then `materialize_patches_into_home`
+                // check, then `materialize_attachments_into_home`
                 // would iterate an empty composition and no-op —
                 // silently promoting the session to `Active` with
                 // an empty home. Fault the finalize so the client
@@ -613,33 +613,33 @@ impl BoxActor {
                     ));
                 }
 
-                // Precondition: patches marker present on disk. The
-                // marker is the last thing the patches unpacker
-                // writes, so its presence proves every patch is
+                // Precondition: attachments marker present on disk. The
+                // marker is the last thing the attachments unpacker
+                // writes, so its presence proves every attachment is
                 // staged. Without this check a client-side bug
-                // that skipped the patches upload would silently
+                // that skipped the attachments upload would silently
                 // yield an Active session with a broken sandbox
                 // rootfs.
                 //
-                // Short-circuit: a composition with no patches has
+                // Short-circuit: a composition with no attachments has
                 // nothing for the client to upload, so the marker
                 // isn't required. Callers with empty compositions
                 // (internal ones — sftp/exec/session-recovery — and
                 // any project with no fs mappings) go straight
                 // through here.
                 let paths_obj = self.record.object().await?;
-                let patches_dir = paths_obj.patches_path();
-                let has_patches = matches!(
+                let attachments_dir = paths_obj.attachments_path();
+                let has_attachments = matches!(
                     &self.inner,
                     BoxInner::Active {
                         composition: Some(c),
                         ..
-                    } if !c.patches().is_empty()
+                    } if !c.attachments().is_empty()
                 );
-                if has_patches {
-                    let marker = patches_dir
+                if has_attachments {
+                    let marker = attachments_dir
                         .as_utf8_path()
-                        .join(crate::rpc::PATCHES_READY_MARKER);
+                        .join(crate::rpc::ATTACHMENTS_READY_MARKER);
                     // Distinguish "marker absent" (client forgot the
                     // upload; retry the upload + FinalizeSession)
                     // from "we couldn't tell" (permissions, filesystem
@@ -650,14 +650,17 @@ impl BoxActor {
                     let marker_present = tokio::fs::try_exists(&marker).await.map_err(|e| {
                         std::io::Error::new(
                             e.kind(),
-                            format!("checking patches-ready marker at {}: {e}", marker.as_str()),
+                            format!(
+                                "checking attachments-ready marker at {}: {e}",
+                                marker.as_str()
+                            ),
                         )
                     })?;
                     if !marker_present {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidInput,
-                            "patches upload never completed; cannot finalize \
-                             (upload patches, then retry the activation)",
+                            "attachments upload never completed; cannot finalize \
+                             (upload attachments, then retry the activation)",
                         ));
                     }
                 }
@@ -712,7 +715,7 @@ impl BoxActor {
                     package_check_skipped = self.check_composed_packages(comp).await?;
                 }
 
-                // Materialize the composition's patches into the
+                // Materialize the composition's attachments into the
                 // session's home dir. Done here — once — rather
                 // than on every attach so the sandbox home is
                 // populated exactly at the point the session
@@ -720,17 +723,17 @@ impl BoxActor {
                 // the same tree without re-copying (which would
                 // clobber any in-sandbox modifications the user
                 // made in prior attaches). If the composition has
-                // no patches, this is a no-op.
+                // no attachments, this is a no-op.
                 if let BoxInner::Active {
                     composition: Some(comp),
                     ..
                 } = &self.inner
                 {
                     let home = paths_obj.home_path();
-                    materialize_patches_into_home(&patches_dir, &home, comp).await?;
+                    materialize_attachments_into_home(&attachments_dir, &home, comp).await?;
                 }
 
-                // Activate hooks run here — after the patches are in the
+                // Activate hooks run here — after the attachments are in the
                 // sandbox home, before the session becomes attachable —
                 // so setup work and its failures land at
                 // `min session activate` rather than at some later
@@ -1215,7 +1218,7 @@ impl BoxActor {
     /// Gated on the same lifecycle status as [`BoxActor::attach`]:
     /// the on-disk record must be `Active`. `BoxInner::Active`
     /// alone doesn't distinguish `Materializing` (composition done,
-    /// patches not yet uploaded and not yet materialized into the
+    /// attachments not yet uploaded and not yet materialized into the
     /// sandbox home) from `Active` (fully ready). Building a
     /// context and running a task against a `Materializing`
     /// session would execute against an unpopulated home dir —

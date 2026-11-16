@@ -18,7 +18,7 @@ use super::{Conflict, Provenanced, Source};
 // user's `ignore` policy could drop offending contributors. The
 // closure-driven extractors let one body serve every item type that
 // impls [`Provenanced`] — `ProvenancedVar` / `SessionVar` for vars,
-// `ProvenancedPatch` / `SessionPatch` for patches.
+// `ProvenancedAttachment` / `SessionAttachment` for attachments.
 //
 // O(n²) worst case, but allocates only on the conflict path: the
 // hot path is "no conflicts" and walks without building any
@@ -53,12 +53,12 @@ pub(crate) fn check_var_mismatches<'a, T: Provenanced + 'a>(
         .map_or(Ok(()), Err)
 }
 
-/// Patch counterpart to [`check_var_mismatches`]. `dest` is the
+/// Attachment counterpart to [`check_var_mismatches`]. `dest` is the
 /// conflict key; `pattern` is the source-side representation that
 /// disagreement is checked against — the raw source pattern pre-gate,
 /// the resolved host path post-gate. Either way it stringifies into
-/// the [`Conflict::PatchSourceMismatch`] message.
-pub(crate) fn check_patch_mismatches<'a, T: Provenanced + 'a>(
+/// the [`Conflict::AttachmentSourceMismatch`] message.
+pub(crate) fn check_attachment_mismatches<'a, T: Provenanced + 'a>(
     items: impl IntoIterator<Item = &'a T>,
     dest: impl Fn(&T) -> &paths::SandboxRelPath,
     pattern: impl Fn(&T) -> &str,
@@ -66,25 +66,25 @@ pub(crate) fn check_patch_mismatches<'a, T: Provenanced + 'a>(
     group_by_key(items, &dest)
         .into_iter()
         .find_map(|(d, group)| disagreement(&group, &pattern).then_some((d, group)))
-        .map(|(d, group)| Conflict::PatchSourceMismatch {
+        .map(|(d, group)| Conflict::AttachmentSourceMismatch {
             dest: d.clone(),
             disagreeing_sources: collect_contributions(group, &pattern),
         })
         .map_or(Ok(()), Err)
 }
 
-/// Reject two patches whose destinations are prefixes of one another
+/// Reject two attachments whose destinations are prefixes of one another
 /// on a path-component boundary — `foo` vs `foo/bar` — since
-/// `materialize_patches_into_home` can't create the shorter as a
+/// `materialize_attachments_into_home` can't create the shorter as a
 /// file *and* the longer as `<shorter>/<tail>`. Caught here so the
 /// operator sees a compose-time conflict listing both contributors,
 /// rather than a mid-`FinalizeSession` `NotADirectory`/`IsADirectory`
 /// I/O error that leaves the session stuck in `Materializing`.
 ///
-/// O(n²) worst-case, matching the existing `check_patch_mismatches`
+/// O(n²) worst-case, matching the existing `check_attachment_mismatches`
 /// shape — the batches this runs against are small (a few dozen at
 /// most in practice).
-pub(crate) fn check_patch_prefix_collisions<'a, T: Provenanced + 'a>(
+pub(crate) fn check_attachment_prefix_collisions<'a, T: Provenanced + 'a>(
     items: impl IntoIterator<Item = &'a T> + Clone,
     dest: impl Fn(&T) -> &paths::SandboxRelPath,
 ) -> Result<(), Conflict> {
@@ -95,9 +95,9 @@ pub(crate) fn check_patch_prefix_collisions<'a, T: Provenanced + 'a>(
             let b_dest = dest(b);
             if a_dest == b_dest {
                 // Same-destination collisions are the
-                // `PatchSourceMismatch` case: same source is a dup
+                // `AttachmentSourceMismatch` case: same source is a dup
                 // (fine), different source is that other conflict
-                // (fires from `check_patch_mismatches`, not here).
+                // (fires from `check_attachment_mismatches`, not here).
                 continue;
             }
             let (shorter, longer, shorter_src, longer_src) =
@@ -108,7 +108,7 @@ pub(crate) fn check_patch_prefix_collisions<'a, T: Provenanced + 'a>(
                 } else {
                     continue;
                 };
-            return Err(Conflict::PatchDestPrefixCollision {
+            return Err(Conflict::AttachmentDestPrefixCollision {
                 shorter: shorter.clone(),
                 longer: longer.clone(),
                 contributors: Box::new([
@@ -123,7 +123,7 @@ pub(crate) fn check_patch_prefix_collisions<'a, T: Provenanced + 'a>(
 
 /// True iff `shorter` is a component-boundary prefix of `longer`
 /// (both relative, equal-length is not a prefix — that would be
-/// same-destination, covered by `check_patch_mismatches`). Component
+/// same-destination, covered by `check_attachment_mismatches`). Component
 /// boundary so `foo` doesn't wrongly match `foobar` (only `foo/bar`).
 fn is_component_prefix(shorter: &camino::Utf8Path, longer: &camino::Utf8Path) -> bool {
     let mut s = shorter.components();
@@ -189,7 +189,7 @@ fn collect_contributions<T: Provenanced>(
 /// semantics mean two contributors asking for the same package is
 /// not a conflict (there's no value to disagree on).
 ///
-/// Not used for vars or patches: same-key same-value duplicates are
+/// Not used for vars or attachments: same-key same-value duplicates are
 /// harmless and kept (matches the prior "pure aggregation" behavior
 /// on the no-disagreement path).
 pub(crate) fn dedupe_by_name<T>(items: &mut Vec<T>, name: impl Fn(&T) -> &str) {

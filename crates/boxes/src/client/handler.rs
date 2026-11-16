@@ -1,10 +1,10 @@
 //! Client-side handler for the daemon's [`ContributionResponse`].
 //!
-//! Gates each pending var and patch against the user's policy and
+//! Gates each pending var and attachment against the user's policy and
 //! emits a [`ContributionVerdict`] to ship back via `SubmitVerdict`.
 //! Vars are gated first: any that get approved join the loadout's
-//! gated vars in the expansion context used to resolve patch source
-//! patterns in the same call, so a patch declared with
+//! gated vars in the expansion context used to resolve attachment source
+//! patterns in the same call, so an attachment declared with
 //! `~/${PROJECT_ROOT}` can reference a `PROJECT_ROOT` approved
 //! moments earlier in the same response.
 //!
@@ -20,19 +20,19 @@
 //! land at the end.
 
 use crate::core::compose::{
-    ComposeError, ComposeOptions, HookDomain, PatchAnchors, PendingPatchFile, PendingVar,
-    SessionVar, expand_patch_sources,
+    AttachmentAnchors, ComposeError, ComposeOptions, HookDomain, PendingAttachmentFile, PendingVar,
+    SessionVar, expand_attachment_sources,
 };
 use crate::core::decision::{CheckOutcome, Decision, ItemDecision};
-use crate::core::enumerate::enumerate_patch_files;
+use crate::core::enumerate::enumerate_attachment_files;
 use crate::core::hooks::{PolicyHooks, Unapproved};
 use crate::core::policy::{
     ExpandedPatchesPolicy, HooksPolicy, PatchesPolicy, UserPolicy, VarsPolicy,
 };
-use crate::core::primitives::{Patch, PatchDest};
-use crate::core::source::{Provenanced, ProvenancedPatch, Source};
+use crate::core::primitives::{Attachment, AttachmentDest};
+use crate::core::source::{Provenanced, ProvenancedAttachment, Source};
 use crate::wire::policy::{WireHookVerdict, WirePatchVerdict, WireVarVerdict};
-use crate::wire::primitives::{WirePendingHook, WirePendingPatch, WirePendingVar};
+use crate::wire::primitives::{WirePendingAttachment, WirePendingHook, WirePendingVar};
 use crate::wire::request::{ContributionResponse, ContributionVerdict};
 
 /// Gate the daemon's pending items against `policy`, prompting via
@@ -40,7 +40,7 @@ use crate::wire::request::{ContributionResponse, ContributionVerdict};
 /// [`ContributionVerdict`] to ship back to the daemon.
 ///
 /// `gated_vars` is the client's already-gated var set from the
-/// loadout phase; pending patch sources may reference both those
+/// loadout phase; pending attachment sources may reference both those
 /// and any vars approved in this response.
 ///
 /// # Errors
@@ -68,7 +68,7 @@ pub fn handle_response(
         gated_vars.iter().cloned().chain(var_out.approved).collect();
 
     let (patch_verdicts, patches_policy) = gate_pending_patches(
-        response.patches,
+        response.attachments,
         patches_policy,
         hooks,
         options,
@@ -77,7 +77,7 @@ pub fn handle_response(
     )?;
 
     // Hooks gate last so its policy patterns can expand against the
-    // same resolved var set the patch gate used.
+    // same resolved var set the attachment gate used.
     let (hook_verdicts, hooks_policy) = gate_pending_hooks(
         response.lifecycle_hooks,
         hooks_policy,
@@ -95,7 +95,7 @@ pub fn handle_response(
         ContributionVerdict {
             session_id,
             vars: var_out.verdicts,
-            patches: patch_verdicts,
+            attachments: patch_verdicts,
             lifecycle_hooks: hook_verdicts,
         },
         final_policy,
@@ -243,7 +243,7 @@ impl Provenanced for HookRef {
 
 /// Two-output result of processing a single pending var: the wire
 /// verdict the daemon receives, and an optional [`SessionVar`] to
-/// chain into patch expansion (only present when the decision was
+/// chain into attachment expansion (only present when the decision was
 /// `Allowed`).
 struct VarOutcome {
     verdict: WireVarVerdict,
@@ -251,7 +251,7 @@ struct VarOutcome {
 }
 
 /// Output of [`gate_pending_vars`]: the wire-form verdicts and the
-/// approved vars to feed into patch expansion.
+/// approved vars to feed into attachment expansion.
 struct VarGateOutput {
     verdicts: Vec<WireVarVerdict>,
     approved: Vec<SessionVar>,
@@ -421,11 +421,11 @@ fn classify_var(policy: &VarsPolicy, pending: PendingVar) -> VarClassification {
 }
 
 // =====================================================================
-// Patches
+// Attachments
 // =====================================================================
 
 fn gate_pending_patches(
-    pending: Vec<WirePendingPatch>,
+    pending: Vec<WirePendingAttachment>,
     policy: PatchesPolicy,
     hooks: &dyn PolicyHooks,
     options: ComposeOptions,
@@ -441,14 +441,14 @@ fn gate_pending_patches(
     // loadout (the daemon only sends Package / Project items), so
     // `$LOADOUT_ROOT` here is refused rather than anchored somewhere
     // arbitrary.
-    let anchors = PatchAnchors::home(home_fallback);
+    let anchors = AttachmentAnchors::home(home_fallback);
 
     let mut expanded_policy = policy.expand_with(combined_vars, home_fallback)?;
 
-    // Pass 1: walk each pending patch's source pattern, classify
+    // Pass 1: walk each pending attachment's source pattern, classify
     // every matched file. Unapproved files batch into one queue so
     // the hook prompts once per response.
-    let (mut verdicts, unapproved) = enumerate_and_classify_patches(
+    let (mut verdicts, unapproved) = enumerate_and_classify_attachments(
         pending,
         &expanded_policy,
         combined_vars,
@@ -481,54 +481,55 @@ fn gate_pending_patches(
     Ok((verdicts, policy))
 }
 
-/// Walk every pending patch's source pattern, run each matched file
+/// Walk every pending attachment's source pattern, run each matched file
 /// through the policy, and partition into finished verdicts vs files
 /// that need the hook.
-fn enumerate_and_classify_patches(
-    pending: Vec<WirePendingPatch>,
+fn enumerate_and_classify_attachments(
+    pending: Vec<WirePendingAttachment>,
     policy: &ExpandedPatchesPolicy,
     combined_vars: &[SessionVar],
-    anchors: PatchAnchors<'_>,
+    anchors: AttachmentAnchors<'_>,
     follow_symlinks: bool,
-) -> Result<(Vec<WirePatchVerdict>, Vec<PendingPatchFile>), ComposeError> {
+) -> Result<(Vec<WirePatchVerdict>, Vec<PendingAttachmentFile>), ComposeError> {
     let mut verdicts: Vec<WirePatchVerdict> = Vec::new();
-    let mut unapproved: Vec<PendingPatchFile> = Vec::new();
+    let mut unapproved: Vec<PendingAttachmentFile> = Vec::new();
     for p in pending {
         let id = p.id;
         let provenance: Source = p.source.into();
-        let dest = PatchDest::try_new(p.destination.as_utf8_path().to_path_buf())
-            .map_err(|source| ComposeError::InvalidPendingPatchDest { source })?;
+        let dest = AttachmentDest::try_new(p.destination.as_utf8_path().to_path_buf())
+            .map_err(|source| ComposeError::InvalidPendingAttachmentDest { source })?;
         // Captured before `source_pattern` moves into the
-        // `ProvenancedPatch` below; the "no host-anchored walk root"
+        // `ProvenancedAttachment` below; the "no host-anchored walk root"
         // error path names it so an operator sees which pattern
         // needs anchoring.
         let pattern_display = p.source_pattern.clone();
-        // Client-response path handles daemon-side patches (Package /
+        // Client-response path handles daemon-side attachments (Package /
         // Project) — user loadouts never reach this path (see
         // `daemon::composer`, which only accepts non-loadout
-        // Composables). `ProvenancedPatch::new` stamps
+        // Composables). `ProvenancedAttachment::new` stamps
         // `follow_symlinks: None`, which resolves to the compose
         // default at expand time.
-        let pp = ProvenancedPatch::new(Patch::new(p.source_pattern, dest), provenance);
-        let expanded = expand_patch_sources(vec![pp], combined_vars, anchors, follow_symlinks)?;
-        // Capture the walk root before `enumerate_patch_files`
+        let pp = ProvenancedAttachment::new(Attachment::new(p.source_pattern, dest), provenance);
+        let expanded =
+            expand_attachment_sources(vec![pp], combined_vars, anchors, follow_symlinks)?;
+        // Capture the walk root before `enumerate_attachment_files`
         // consumes `expanded`. Needed for the synthetic Ignored
         // verdict emitted below when the walk yields zero files.
         let synthetic_host_path = expanded
             .first()
             .and_then(|epp| epp.source.walk_root())
             .and_then(|hp| paths::HostAbsPath::try_new(hp.as_utf8_path().to_path_buf()).ok());
-        let files = enumerate_patch_files(expanded)?;
+        let files = enumerate_attachment_files(expanded)?;
         let mut emitted_for_id = false;
         for pf in files {
             emitted_for_id = true;
-            match classify_patch_file(policy, PendingPatchFile::new(id, pf)) {
-                PatchClassification::Decided(verdict) => verdicts.push(verdict),
-                PatchClassification::Pending(p) => unapproved.push(p),
+            match classify_attachment_file(policy, PendingAttachmentFile::new(id, pf)) {
+                AttachmentClassification::Decided(verdict) => verdicts.push(verdict),
+                AttachmentClassification::Pending(p) => unapproved.push(p),
             }
         }
         // The daemon requires at least one verdict per pending id.
-        // A pending patch whose walk matched zero files (e.g. the
+        // A pending attachment whose walk matched zero files (e.g. the
         // path doesn't exist on this host, or the glob matched no
         // real files) still needs an entry — a synthetic `Ignored`
         // that references the walk root. If we can't even produce a
@@ -537,13 +538,13 @@ fn enumerate_and_classify_patches(
         // client-side error naming the pending id and pattern rather
         // than sending an incomplete verdict and letting the daemon
         // reply with the undebuggable `verdict missing entry for
-        // pending patch`.
+        // pending attachment`.
         if !emitted_for_id {
             if let Some(host_path) = synthetic_host_path {
                 verdicts.push(WirePatchVerdict::Ignored { id, host_path });
             } else {
                 return Err(ComposeError::InvalidWireItem {
-                    what: "pending patch has no host-anchored walk root",
+                    what: "pending attachment has no host-anchored walk root",
                     context: format!(
                         "pending id {id:?}, source pattern `{pattern_display}` \
                          — the pattern's literal prefix is not an absolute \
@@ -558,10 +559,10 @@ fn enumerate_and_classify_patches(
     Ok((verdicts, unapproved))
 }
 
-/// Apply a hook's `ItemDecision` to a single pending patch file.
+/// Apply a hook's `ItemDecision` to a single pending attachment file.
 fn apply_patch_decision(
     policy: &ExpandedPatchesPolicy,
-    pending: PendingPatchFile,
+    pending: PendingAttachmentFile,
     decision: ItemDecision,
 ) -> Result<WirePatchVerdict, ComposeError> {
     match decision {
@@ -574,9 +575,9 @@ fn apply_patch_decision(
             let host_path = pf.target_path;
             Ok(WirePatchVerdict::Ignored { id, host_path })
         }
-        ItemDecision::UseRule => match classify_patch_file(policy, pending) {
-            PatchClassification::Decided(verdict) => Ok(verdict),
-            PatchClassification::Pending(p) => Err(ComposeError::use_rule_undecided(
+        ItemDecision::UseRule => match classify_attachment_file(policy, pending) {
+            AttachmentClassification::Decided(verdict) => Ok(verdict),
+            AttachmentClassification::Pending(p) => Err(ComposeError::use_rule_undecided(
                 HookDomain::Patch,
                 format!("path `{}`", p.file().target_path.as_str()),
             )),
@@ -584,18 +585,18 @@ fn apply_patch_decision(
     }
 }
 
-/// Result of running a single matched file through the patch policy.
-enum PatchClassification {
+/// Result of running a single matched file through the attachment policy.
+enum AttachmentClassification {
     /// Policy reached a verdict.
     Decided(WirePatchVerdict),
     /// Policy couldn't decide; file is returned for the hook batch.
-    Pending(PendingPatchFile),
+    Pending(PendingAttachmentFile),
 }
 
-fn classify_patch_file(
+fn classify_attachment_file(
     policy: &ExpandedPatchesPolicy,
-    pending: PendingPatchFile,
-) -> PatchClassification {
+    pending: PendingAttachmentFile,
+) -> AttachmentClassification {
     let (id, pf) = pending.into_parts();
     // Save the target path before `policy.check` consumes the file;
     // the Ignored arm doesn't get the file back and needs the path
@@ -607,20 +608,20 @@ fn classify_patch_file(
         .map(|p| p.as_utf8_path().to_path_buf());
     let target = pf.target_path.as_utf8_path().to_path_buf();
     match policy.check(link.as_deref(), &target, pf) {
-        CheckOutcome::Decided(Decision::Allowed(pf)) => {
-            PatchClassification::Decided(PendingPatchFile::new(id, pf).into_approved_verdict())
-        }
-        CheckOutcome::Decided(Decision::Denied(pf)) => {
-            PatchClassification::Decided(PendingPatchFile::new(id, pf).into_denied_verdict())
-        }
+        CheckOutcome::Decided(Decision::Allowed(pf)) => AttachmentClassification::Decided(
+            PendingAttachmentFile::new(id, pf).into_approved_verdict(),
+        ),
+        CheckOutcome::Decided(Decision::Denied(pf)) => AttachmentClassification::Decided(
+            PendingAttachmentFile::new(id, pf).into_denied_verdict(),
+        ),
         CheckOutcome::Decided(Decision::Ignored) => {
-            PatchClassification::Decided(WirePatchVerdict::Ignored {
+            AttachmentClassification::Decided(WirePatchVerdict::Ignored {
                 id,
                 host_path: saved_target,
             })
         }
         CheckOutcome::NeedsApproval(pf) => {
-            PatchClassification::Pending(PendingPatchFile::new(id, pf))
+            AttachmentClassification::Pending(PendingAttachmentFile::new(id, pf))
         }
     }
 }

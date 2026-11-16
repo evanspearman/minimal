@@ -63,7 +63,7 @@ fn assert_paths_equivalent(actual: &str, expected: impl AsRef<std::path::Path>) 
 // Tests
 // =====================================================================
 
-/// Minimal happy path. A loadout with one var, one patch, one package,
+/// Minimal happy path. A loadout with one var, one attachment, one package,
 /// and one lifecycle hook produces a wire contribution with one of each,
 /// every item tagged `UserLoadout { name: "dev" }`.
 #[test]
@@ -99,7 +99,7 @@ on_activate = {{ type = "inline", value = "echo activated" }}
     assert_eq!(wire.vars[0].var.name, "EDITOR");
     assert_eq!(wire.vars[0].var.value, "hx");
 
-    assert_eq!(wire.patches.len(), 1);
+    assert_eq!(wire.attachments.len(), 1);
     assert_eq!(wire.requested_packages.len(), 1);
     assert_eq!(wire.requested_packages[0].name, "helix");
     assert_eq!(wire.lifecycle_hooks.len(), 1);
@@ -107,7 +107,7 @@ on_activate = {{ type = "inline", value = "echo activated" }}
     // Every item carries the loadout name as its source.
     let sources = [
         &wire.vars[0].source,
-        &wire.patches[0].source,
+        &wire.attachments[0].source,
         &wire.requested_packages[0].source,
         &wire.lifecycle_hooks[0].source,
     ];
@@ -221,11 +221,11 @@ LANG = { inherit = true, default = "sjn_IV" }
     assert_eq!(wire.vars[0].var.value, "sjn_IV");
 }
 
-/// A `~/`-prefixed patch source expands against the env's `HOME` value
+/// A `~/`-prefixed attachment source expands against the env's `HOME` value
 /// when the loadout doesn't declare one. The wire form carries the
 /// absolute host path.
 #[test]
-fn tilde_patch_source_expands_against_env_home() {
+fn tilde_attachment_source_expands_against_env_home() {
     let tmp = tempfile::tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     fixture_tree(root, [("dotfiles/helix/config.toml", "theme = 'nord'\n")]);
@@ -246,8 +246,8 @@ source = "~/dotfiles/helix/config.toml"
     let (wire, _) = composer
         .compose(UserPolicy::empty(), ComposeOptions::default())
         .unwrap();
-    assert_eq!(wire.patches.len(), 1);
-    let host_path = wire.patches[0].patch.host_path.as_str();
+    assert_eq!(wire.attachments.len(), 1);
+    let host_path = wire.attachments[0].attachment.host_path.as_str();
 
     // The gate produces the path with the tilde expanded against HOME.
     // Verify shape directly first — otherwise a canonicalize-driven
@@ -264,11 +264,11 @@ source = "~/dotfiles/helix/config.toml"
     );
 }
 
-/// A patch with a glob source fans out into one wire patch per matched
+/// An attachment with a glob source fans out into one wire attachment per matched
 /// file. Destinations are computed from the path relative to the walk
 /// root.
 #[test]
-fn multi_file_patch_fans_out() {
+fn multi_file_attachment_fans_out() {
     let tmp = tempfile::tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     fixture_tree(
@@ -295,20 +295,20 @@ source = "{root}/dotfiles/helix/themes/**/*.toml"
         .compose(UserPolicy::empty(), ComposeOptions::default())
         .unwrap();
 
-    // The filesystem walk that drives patch fan-out doesn't guarantee
+    // The filesystem walk that drives attachment fan-out doesn't guarantee
     // order across platforms (readdir is unordered on Linux). Sort by
     // destination before asserting so the test is deterministic; this
     // is a test concern, not a gate guarantee.
-    wire.patches.sort_by(|a, b| {
-        a.patch
+    wire.attachments.sort_by(|a, b| {
+        a.attachment
             .destination
             .as_str()
-            .cmp(b.patch.destination.as_str())
+            .cmp(b.attachment.destination.as_str())
     });
     let dests: Vec<&str> = wire
-        .patches
+        .attachments
         .iter()
-        .map(|sp| sp.patch.destination.as_str())
+        .map(|sp| sp.attachment.destination.as_str())
         .collect();
     assert_eq!(
         dests,
@@ -348,8 +348,8 @@ _TMP = { inherit = true }
     assert_eq!(names, ["EDITOR"]);
 }
 
-/// `PatchesPolicy::ignore` drops a matching user-origin patch file. The
-/// patch-side analogue of [`ignore_filters_user_var`].
+/// `PatchesPolicy::ignore` drops a matching user-origin attachment file. The
+/// attachment-side analogue of [`ignore_filters_user_var`].
 ///
 /// Both the source pattern and the deny pattern use `**` — the source
 /// to drive a recursive walk under `themes/` (so the fixture's nested
@@ -357,7 +357,7 @@ _TMP = { inherit = true }
 /// the absolute path (globset's `*` doesn't cross `/`, so non-anchored
 /// matches need `**`).
 #[test]
-fn ignore_filters_user_patch() {
+fn ignore_filters_user_attachment() {
     let tmp = tempfile::tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     fixture_tree(
@@ -386,8 +386,8 @@ source = "{root}/dotfiles/helix/themes/**/*"
     composer.add(loadout).unwrap();
     let (wire, _) = composer.compose(policy, ComposeOptions::default()).unwrap();
 
-    assert_eq!(wire.patches.len(), 1);
-    let host_path = wire.patches[0].patch.host_path.as_str();
+    assert_eq!(wire.attachments.len(), 1);
+    let host_path = wire.attachments[0].attachment.host_path.as_str();
     // Shape match (starts_with + ends_with) — both sides come from
     // the same tempdir root, so canonicalization gymnastics aren't
     // needed. If we shipped a `.bak` or grabbed the wrong file, one
@@ -399,10 +399,10 @@ source = "{root}/dotfiles/helix/themes/**/*"
     );
 }
 
-/// User policy's `deny` rule rejects a matching user-origin patch
-/// file. The patch-side analogue of [`deny_rejects_user_var`].
+/// User policy's `deny` rule rejects a matching user-origin attachment
+/// file. The attachment-side analogue of [`deny_rejects_user_var`].
 #[test]
-fn deny_rejects_user_patch() {
+fn deny_rejects_user_attachment() {
     let tmp = tempfile::tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     fixture_tree(root, [("dotfiles/secrets/id_rsa", "PRIVATE\n")]);
@@ -513,7 +513,7 @@ on_activate = {{ type = "inline", value = "echo activated" }}
 
     assert_eq!(decoded.vars.len(), 1);
     assert_eq!(decoded.vars[0].var.value, "sjn_IV");
-    assert_eq!(decoded.patches.len(), 1);
+    assert_eq!(decoded.attachments.len(), 1);
     assert_eq!(decoded.lifecycle_hooks.len(), 1);
     assert_eq!(decoded.requested_packages.len(), 1);
 }
@@ -537,7 +537,7 @@ fn loadouts_dir_fixture(root: &Utf8Path) {
     );
 }
 
-/// The end the feature exists for: a loadout patches in files shipped
+/// The end the feature exists for: a loadout attachments in files shipped
 /// beside it, naming neither the user's config directory nor its own
 /// name. Both a literal file and a glob resolve under `<dir>/dev/`,
 /// and nothing reaches the neighbouring `ops/` tree.
@@ -573,12 +573,12 @@ source = "${LOADOUT_ROOT}/themes/**/*.toml"
         .unwrap();
 
     let mut resolved: Vec<(&str, &str)> = wire
-        .patches
+        .attachments
         .iter()
         .map(|p| {
             (
-                p.patch.host_path.as_str(),
-                p.patch.destination.as_utf8_path().as_str(),
+                p.attachment.host_path.as_str(),
+                p.attachment.destination.as_utf8_path().as_str(),
             )
         })
         .collect();
@@ -615,14 +615,14 @@ source = "${LOADOUT_ROOT}/themes/**/*.toml"
 /// relocation of the definition file: `Source::loadout_dir` derives
 /// the anchor from the loadout's *name*, so nothing downstream of
 /// discovery has to know which layout was used. A loadout migrates
-/// with `mkdir dev && mv dev.toml dev/loadout.toml` and keeps patching
+/// with `mkdir dev && mv dev.toml dev/loadout.toml` and keeps copying
 /// the same files.
 #[test]
 fn loadout_root_is_the_same_directory_under_both_layouts() {
-    // The same patch declarations, filed both ways below: `dev.toml`
+    // The same attachment declarations, filed both ways below: `dev.toml`
     // beside a `dev/` of assets, and `vc/loadout.toml` inside its own
     // `vc/`.
-    const PATCHES: &str = r#"
+    const ATTACHMENTS: &str = r#"
 [[patches]]
 dest = ".config/helix/config.toml"
 source = "$LOADOUT_ROOT/config.toml"
@@ -636,7 +636,7 @@ source = "${LOADOUT_ROOT}/themes/**/*.toml"
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     loadouts_dir_fixture(root);
 
-    std::fs::write(root.join("dev.toml").as_std_path(), PATCHES).unwrap();
+    std::fs::write(root.join("dev.toml").as_std_path(), ATTACHMENTS).unwrap();
     fixture_tree(
         root,
         [
@@ -644,11 +644,11 @@ source = "${LOADOUT_ROOT}/themes/**/*.toml"
             ("vc/themes/nord.toml", "# nord\n"),
         ],
     );
-    std::fs::write(root.join("vc/loadout.toml").as_std_path(), PATCHES).unwrap();
+    std::fs::write(root.join("vc/loadout.toml").as_std_path(), ATTACHMENTS).unwrap();
 
     // Resolve each through the shared name→loadout entry point, the
     // way an activation does, and collect the host paths each ends up
-    // patching from.
+    // copying from.
     let sources_for = |name: &str| -> Vec<String> {
         let loadout_name = boxes::core::loadout::LoadoutName::try_new(name).unwrap();
         let (loadout, _layout) =
@@ -662,9 +662,9 @@ source = "${LOADOUT_ROOT}/themes/**/*.toml"
             .compose(UserPolicy::empty(), ComposeOptions::default())
             .unwrap();
         let mut hosts: Vec<String> = wire
-            .patches
+            .attachments
             .iter()
-            .map(|p| p.patch.host_path.as_str().to_owned())
+            .map(|p| p.attachment.host_path.as_str().to_owned())
             .collect();
         hosts.sort_unstable();
         hosts
@@ -693,11 +693,11 @@ source = "${LOADOUT_ROOT}/themes/**/*.toml"
     );
 }
 
-/// The reference is reserved in patch sources: a loadout that also
-/// exports a `LOADOUT_ROOT` variable still patches from its own
+/// The reference is reserved in attachment sources: a loadout that also
+/// exports a `LOADOUT_ROOT` variable still attachments from its own
 /// directory, and the variable itself reaches the session untouched.
 #[test]
-fn a_loadout_root_var_does_not_redirect_patch_sources() {
+fn a_loadout_root_var_does_not_redirect_attachment_sources() {
     let tmp = tempfile::tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     loadouts_dir_fixture(root);
@@ -723,12 +723,12 @@ source = "$LOADOUT_ROOT/config.toml"
         .compose(UserPolicy::empty(), ComposeOptions::default())
         .unwrap();
 
-    assert_eq!(wire.patches.len(), 1);
+    assert_eq!(wire.attachments.len(), 1);
     assert_paths_equivalent(
-        wire.patches[0].patch.host_path.as_str(),
+        wire.attachments[0].attachment.host_path.as_str(),
         root.join("dev/config.toml").as_std_path(),
     );
-    // Reserved in patch sources, ordinary everywhere else: the var is
+    // Reserved in attachment sources, ordinary everywhere else: the var is
     // still contributed to the session's environment.
     assert_eq!(wire.vars.len(), 1);
     assert_eq!(wire.vars[0].var.name, "LOADOUT_ROOT");

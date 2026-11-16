@@ -2186,7 +2186,7 @@ impl BoxManager {
         // daemon lifetime. Both `Pending` (compose in flight — the
         // in-memory `PendingComposeState` didn't survive the
         // restart) and `Materializing` (composition ready but
-        // patches upload state is lost) are meaningless without
+        // attachments upload state is lost) are meaningless without
         // in-memory context, so the record can't be brought back
         // to a working state. Delete them here rather than let
         // them linger and confuse `min ls` / hold their names
@@ -3650,7 +3650,7 @@ impl BoxManagerHandle {
                 working: object.workspace_path(),
                 cache: object.cache_path(),
                 home: object.home_path(),
-                patches: object.patches_path(),
+                attachments: object.attachments_path(),
                 hooks: object.hooks_path(),
             },
         }))

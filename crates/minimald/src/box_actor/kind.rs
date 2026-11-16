@@ -28,7 +28,7 @@ impl BoxMessage {
             Self::GetNetSwitch { .. } => "GetNetSwitch",
             Self::GetDenyAllOptOut(_) => "GetDenyAllOptOut",
             Self::GetComposition { .. } => "GetComposition",
-            Self::GetPatchesUploadLock { .. } => "GetPatchesUploadLock",
+            Self::GetAttachmentsUploadLock { .. } => "GetAttachmentsUploadLock",
             Self::GetHookScriptsUploadLock { .. } => "GetHookScriptsUploadLock",
             Self::TrackForward { .. } => "TrackForward",
             Self::StartBuild { .. } => "StartBuild",

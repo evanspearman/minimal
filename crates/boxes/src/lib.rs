@@ -963,10 +963,10 @@ pub enum BoxState {
     #[serde(alias = "draft")]
     Pending,
     /// Composition finalized but the session isn't attachable yet:
-    /// the client is still uploading the composition's patches to
+    /// the client is still uploading the composition's attachments to
     /// the daemon-side workspace. Transitions to [`Self::Active`]
     /// when the client calls `FinalizeSession` — which the daemon
-    /// gates on the patches-ready marker being present. Attach
+    /// gates on the attachments-ready marker being present. Attach
     /// refuses `Materializing` sessions.
     ///
     /// A daemon restart wipes the in-memory composition, so any

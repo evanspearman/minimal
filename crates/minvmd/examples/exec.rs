@@ -248,11 +248,11 @@ async fn run_session_exec(
 
     // FinalizeSession: promote the record `Materializing → Active`
     // so exec/attach passes the daemon's status gate. This example
-    // has no patches to upload beforehand (empty contribution +
+    // has no attachments to upload beforehand (empty contribution +
     // empty workspace mfile → empty composition), so the
-    // `WorkspacePatchesTarZst` step the CLI performs isn't needed
+    // `WorkspaceAttachmentsTarZst` step the CLI performs isn't needed
     // — but `FinalizeSession` still is: the daemon takes the
-    // composition-has-no-patches shortcut past the marker check
+    // composition-has-no-attachments shortcut past the marker check
     // and writes the record as `Active`.
     {
         let channel = handle

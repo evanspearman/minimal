@@ -17,9 +17,9 @@
 //! Reads three attrs off a package's `BuildSpec.attrs`:
 //! - `env_state_wiring` → one var per entry, value
 //!   `/state/<prefix>`.
-//! - `env_dir_mappings` and `env_file_mappings` → one patch per
+//! - `env_dir_mappings` and `env_file_mappings` → one attachment per
 //!   entry (source == dest == the `path` field). Since minimal is
-//!   copy-based, both attrs collapse into the same [`Patch`]
+//!   copy-based, both attrs collapse into the same [`Attachment`]
 //!   primitive; the dir-vs-file distinction is irrelevant at the
 //!   composition layer.
 //!
@@ -27,18 +27,18 @@
 //! **dropped** by the extractor; the future secrets strategy will
 //! route them through a separate path. `read_only` is discarded
 //! (no meaning under copy semantics). `class = 'State` entries
-//! flow through unchanged as regular patches, gate-able via
+//! flow through unchanged as regular attachments, gate-able via
 //! [`PatchesPolicy`].
 //!
 //! [`Composable`]: boxes::core::compose::Composable
 //! [`Source::Package`]: boxes::core::source::Source::Package
 //! [`ProjectComposable`]: crate::ProjectComposable
-//! [`Patch`]: boxes::core::primitives::Patch
+//! [`Attachment`]: boxes::core::primitives::Attachment
 //! [`PatchesPolicy`]: boxes::core::policy::PatchesPolicy
 
 use boxes::core::compose::{Composable, Contribution, Error};
-use boxes::core::primitives::{Patch, PatchDest, ResolvedVar, VarValue};
-use boxes::core::source::{ProvenancedPatch, ProvenancedVar, Source};
+use boxes::core::primitives::{Attachment, AttachmentDest, ResolvedVar, VarValue};
+use boxes::core::source::{ProvenancedAttachment, ProvenancedVar, Source};
 
 /// One `env_state_wiring` entry: an env var the package wants
 /// pointed at a `/state/<prefix>` directory in the sandbox.
@@ -97,7 +97,7 @@ impl PackageFsMapping {
 ///
 /// The `package_name` identifies the source in provenance
 /// ([`Source::Package`]); `state_wiring` produces env vars, and
-/// `fs_mappings` produces patches. Extraction from
+/// `fs_mappings` produces attachments. Extraction from
 /// `BuildSpec.attrs.env_dir_mappings` / `env_file_mappings` lives
 /// at the call site (the crate that owns the graph), which is
 /// also responsible for dropping `class = 'Credential` entries
@@ -146,17 +146,17 @@ impl PackageComposable {
 impl Composable for PackageComposable {
     /// Materialize the package's runtime-env contribution: one
     /// [`ProvenancedVar`] per state-wiring entry (value
-    /// `/state/<prefix>`) and one [`ProvenancedPatch`] per
+    /// `/state/<prefix>`) and one [`ProvenancedAttachment`] per
     /// fs-mapping entry (source == dest == the mapping's `path`).
     /// Every produced item is tagged [`Source::Package`] carrying
     /// the package name. The `env` closure is unused — vars are
-    /// [`VarValue::Specified`], and patch sources aren't resolved
+    /// [`VarValue::Specified`], and attachment sources aren't resolved
     /// at contribution time.
     ///
     /// # Errors
     ///
     /// Returns a [`Composable::Error`] if a mapping's `path` fails
-    /// [`PatchDest`]'s validation (empty, contains `..`, etc.) —
+    /// [`AttachmentDest`]'s validation (empty, contains `..`, etc.) —
     /// treated as a package-declaration bug that should surface
     /// loudly rather than dropping the entry silently.
     ///
@@ -202,9 +202,9 @@ impl Composable for PackageComposable {
                     (source, trimmed)
                 }
             };
-            let dest = PatchDest::try_new(&dest_path)?;
-            c.push_patch(ProvenancedPatch::new(
-                Patch::new(source_pattern, dest),
+            let dest = AttachmentDest::try_new(&dest_path)?;
+            c.push_attachment(ProvenancedAttachment::new(
+                Attachment::new(source_pattern, dest),
                 source.clone(),
             ));
         }
@@ -273,13 +273,13 @@ mod tests {
         assert!(contribution.is_empty());
     }
 
-    /// A package's fs mappings show up as patches: dir mappings get
+    /// A package's fs mappings show up as attachments: dir mappings get
     /// a recursive-glob source (so the client walker enumerates
     /// descendants) with a plain dest (per-file dests are computed
     /// downstream), file mappings use the path verbatim for both
     /// source and dest.
     #[test]
-    fn contribute_maps_fs_mappings_to_patches() {
+    fn contribute_maps_fs_mappings_to_attachments() {
         let comp = PackageComposable::new(
             "claude-code",
             Vec::new(),
@@ -295,25 +295,25 @@ mod tests {
         let env = |_: &str| Err(std::env::VarError::NotPresent);
         let contribution = comp.contribute(&env).expect("contribute succeeds");
 
-        assert_eq!(contribution.patches().len(), 2);
+        assert_eq!(contribution.attachments().len(), 2);
         assert!(contribution.vars().is_empty());
         let expected_source = Source::Package {
             name: "claude-code".into(),
         };
         let by_source: std::collections::HashMap<&str, &str> = contribution
-            .patches()
+            .attachments()
             .iter()
             .map(|pp| {
                 (
-                    pp.patch().source(),
-                    pp.patch().dest().as_sandbox_path().as_str(),
+                    pp.attachment().source(),
+                    pp.attachment().dest().as_sandbox_path().as_str(),
                 )
             })
             .collect();
         // Dir mapping: source keeps `~/` because expansion happens
         // at gate time; dest strips the leading `~/` because it's
         // always sandbox-home-relative by construction
-        // (`PatchDest::try_new` normalizes it out — a literal `~`
+        // (`AttachmentDest::try_new` normalizes it out — a literal `~`
         // directory would otherwise land inside the sandbox home as
         // `/home/~/.claude/…`).
         assert_eq!(by_source.get("~/.claude/**").copied(), Some(".claude"));
@@ -323,7 +323,7 @@ mod tests {
             by_source.get("~/.config/claude/settings.json").copied(),
             Some(".config/claude/settings.json"),
         );
-        for pp in contribution.patches() {
+        for pp in contribution.attachments() {
             assert_eq!(pp.source(), &expected_source);
         }
     }
@@ -343,17 +343,17 @@ mod tests {
             );
             let env = |_: &str| Err(std::env::VarError::NotPresent);
             let contribution = comp.contribute(&env).expect("contribute succeeds");
-            let patch = &contribution.patches()[0];
+            let attachment = &contribution.attachments()[0];
             assert_eq!(
-                patch.patch().source(),
+                attachment.attachment().source(),
                 "~/.claude/**",
                 "trailing slashes should collapse before appending /**"
             );
             assert_eq!(
-                patch.patch().dest().as_sandbox_path().as_str(),
+                attachment.attachment().dest().as_sandbox_path().as_str(),
                 ".claude",
                 "dest should be the trimmed dir path with the leading `~/` stripped \
-                 by PatchDest::try_new (destinations are already home-relative)",
+                 by AttachmentDest::try_new (destinations are already home-relative)",
             );
         }
     }
