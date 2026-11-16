@@ -516,9 +516,12 @@ pub struct Session {
     /// the rare case a non-POSIX name is necessary.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vars_lenient: Vec<boxes::core::primitives::LenientVarEntry>,
-    /// Patches contributed by this project.
+    /// Attachments contributed by this project. Written `attachments`;
+    /// the old name `patches` is still read.
     #[serde(
         default,
+        rename = "attachments",
+        alias = "patches",
         skip_serializing_if = "boxes::core::primitives::Patches::is_empty"
     )]
     pub patches: boxes::core::primitives::Patches,
@@ -1108,6 +1111,16 @@ impl File {
 
     fn deserialize_bytes(bytes: &[u8], path: Option<&Path>) -> Result<Self, Error> {
         toml::from_slice(bytes).map_err(|e| {
+            // `[session]` is the one table that reads `attachments`, whose
+            // serde alias `patches` makes the pair a duplicate field.
+            if e.message()
+                .contains(boxes::core::primitives::DUPLICATE_ATTACHMENTS)
+            {
+                return Error::BothAttachmentKeys {
+                    path: path.map(Path::to_path_buf),
+                    table: "[session]",
+                };
+            }
             if !e.message().contains("untagged enum LinkConfig") {
                 return Error::Format(e);
             }
@@ -3061,6 +3074,35 @@ mod tests {
         assert_eq!(session.vars.len(), 3);
         assert_eq!(session.patches.len(), 2);
         assert_eq!(session.lifecycle_hooks.len(), 1);
+    }
+
+    /// `[session]` written before the rename, with `patches`, reads; one
+    /// that sets both keys is refused with a message naming both. So is
+    /// `[defaults.session]`.
+    #[test]
+    fn session_old_attachments_key_reads_and_both_keys_are_refused() {
+        let old = File::from_toml_bytes(
+            b"[defaults.session]\npatches = [{ dest = \"a\", source = \"a\" }]\n",
+        )
+        .expect("the old key still reads");
+        assert_eq!(old.session.expect("session reads").patches.len(), 1);
+
+        for table in ["session", "defaults.session"] {
+            let src = format!(
+                "[{table}]\nattachments = [{{ dest = \"a\", source = \"a\" }}]\n\
+                 patches = [{{ dest = \"b\", source = \"b\" }}]\n"
+            );
+            let err = File::parse_to(src.as_bytes(), None, &mut std::io::sink())
+                .expect_err("both keys are refused");
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "`[{table}]` in minimal.toml sets both `attachments` and `patches`. \
+                     `patches` is the old name for `attachments`. Move its rows into \
+                     `attachments`."
+                ),
+            );
+        }
     }
 
     /// Unknown fields inside `[session]` land in `extra` for the

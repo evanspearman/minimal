@@ -1156,8 +1156,22 @@ impl Patch {
     }
 }
 
-/// An ordered collection of [`Patch`] entries — the wire form of a
-/// `patches = [...]` array.
+/// The key a list of attachments is written under, in a loadout, a
+/// project's `[session]` and an expanded box spec.
+pub const ATTACHMENTS_KEY: &str = "attachments";
+
+/// The old name of [`ATTACHMENTS_KEY`]. Every reader of the new key still
+/// reads this one, so files written before the rename keep loading.
+pub const OLD_ATTACHMENTS_KEY: &str = "patches";
+
+/// The serde message for a table that sets both [`ATTACHMENTS_KEY`] and
+/// [`OLD_ATTACHMENTS_KEY`]. The old key is a serde alias of the new one,
+/// so serde reports the pair as a duplicate of the new key. Readers match
+/// it to give a message that names both keys.
+pub const DUPLICATE_ATTACHMENTS: &str = "duplicate field `attachments`";
+
+/// An ordered collection of [`Patch`] entries — the wire form of an
+/// `attachments = [...]` array.
 ///
 /// At the wire layer, a single row may carry either one `source` pattern
 /// or a list. List-shaped rows fan out into one [`Patch`] per pattern

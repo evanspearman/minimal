@@ -166,6 +166,26 @@ fn move_under(table: &mut toml::Table, key: &str, into: &str) {
 /// of `new` replaces `old`'s, and `old` supplies the keys `new` does not
 /// set. `min add` writes `[session]` today, so a file can carry both
 /// spellings, and the packages it adds must not be lost.
+/// Moves a list under the old key `patches` in `table` to `attachments`.
+/// A table-valued `patches` is a task's alias of `patch`, and stays.
+///
+/// # Errors
+///
+/// `table` sets both keys.
+pub(crate) fn rename_old_attachments_key(table: &mut toml::Table) -> Result<(), ()> {
+    use boxes::core::primitives::{ATTACHMENTS_KEY, OLD_ATTACHMENTS_KEY};
+    if !matches!(table.get(OLD_ATTACHMENTS_KEY), Some(toml::Value::Array(_))) {
+        return Ok(());
+    }
+    if table.contains_key(ATTACHMENTS_KEY) {
+        return Err(());
+    }
+    if let Some(value) = table.remove(OLD_ATTACHMENTS_KEY) {
+        table.insert(ATTACHMENTS_KEY.to_owned(), value);
+    }
+    Ok(())
+}
+
 fn merge_under(old: toml::Table, new: &mut toml::Table) {
     for (key, value) in old {
         match (value, new.get_mut(&key)) {
@@ -286,6 +306,12 @@ pub(crate) fn settle(
     admit(&found, release, path)?;
 
     if let Some(toml::Value::Table(mut new)) = file.defaults.extra.remove("session") {
+        // The legacy `[session]` below serializes its attachments under the
+        // new key, so the new table's must be under it too to merge.
+        rename_old_attachments_key(&mut new).map_err(|()| Error::BothAttachmentKeys {
+            path: path.map(Path::to_path_buf),
+            table: "[defaults.session]",
+        })?;
         if let Some(old) = file.session.take() {
             let old = toml::Table::try_from(&old)
                 .map_err(|e| Error::Format(<toml::de::Error as serde::de::Error>::custom(e)))?;

@@ -115,8 +115,14 @@ pub struct LoadoutFile {
     /// rare case where a non-POSIX name is necessary.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     vars_lenient: Vec<LenientVarEntry>,
-    /// Patches contributed by this loadout.
-    #[serde(default, skip_serializing_if = "Patches::is_empty")]
+    /// Attachments contributed by this loadout. Written `attachments`;
+    /// the old name `patches` is still read.
+    #[serde(
+        default,
+        rename = "attachments",
+        alias = "patches",
+        skip_serializing_if = "Patches::is_empty"
+    )]
     patches: Patches,
     /// Scripts run at session-level transition points.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -797,13 +803,13 @@ mod tests {
     #[test]
     fn full_loadout_round_trips_through_toml() {
         // Exercise every field at once: packages, both strict and lenient
-        // vars, patches with multiple source shapes, and a lifecycle hook.
+        // vars, attachments with multiple source shapes, and a lifecycle hook.
         let src = r#"
             name        = "dev"
             description = "Editor + terminal multiplexer"
             packages    = ["helix", "zellij"]
 
-            patches = [
+            attachments = [
                 { dest = "etc/foo", source = "./foo" },
                 { dest = "etc/bar", source = ["b1", "b2"] },
                 { dest = "themes/", source = "./themes/**/*.toml" },
@@ -840,6 +846,21 @@ mod tests {
         // creep.
         let reserialized = toml::to_string(&parsed).unwrap();
         assert_eq!(serialized, reserialized);
+    }
+
+    /// A loadout written with the old key `patches` reads, and writes
+    /// back under `attachments`: the alias is read-only.
+    #[test]
+    fn old_attachments_key_reads_and_serializes_as_the_new_key() {
+        let src = r#"
+            name    = "dev"
+            patches = [{ dest = "etc/foo", source = "./foo" }]
+        "#;
+        let loadout: Loadout = toml::from_str(src).unwrap();
+        assert_eq!(loadout.patches().len(), 1);
+        let table = toml::Table::try_from(&loadout).unwrap();
+        assert!(table.contains_key("attachments"), "{table:?}");
+        assert!(!table.contains_key("patches"), "{table:?}");
     }
 
     /// A bare `Inherit` var whose name is missing from the env is

@@ -104,6 +104,13 @@ pub enum Error {
         name: String,
         layer: String,
     },
+    /// A `[session]` or `[defaults.session]` table sets both `attachments`
+    /// and its old name `patches`. Carries the file, when it is known, and
+    /// the table header. Exits 3.
+    BothAttachmentKeys {
+        path: Option<PathBuf>,
+        table: &'static str,
+    },
 }
 
 /// What is wrong with a key of an expanded box spec.
@@ -130,6 +137,8 @@ pub enum SpecKeyProblem {
     /// expansion writes (BOX-179). Carries the hook as the message names
     /// it.
     DeclarerSet { hook: String },
+    /// The layer sets this key, the old name of `new`, and `new` too.
+    OldNameAlsoSet { new: &'static str },
 }
 
 /// The naming rule that an entry name breaks.
@@ -195,7 +204,8 @@ impl Error {
             | Error::ConstraintViolated { .. }
             | Error::BoxType(_)
             | Error::LoadoutVarConflict { .. }
-            | Error::DuplicateVar { .. } => Some(3),
+            | Error::DuplicateVar { .. }
+            | Error::BothAttachmentKeys { .. } => Some(3),
             _ => None,
         }
     }
@@ -333,6 +343,11 @@ impl fmt::Display for Error {
                     "{layer} sets `{key}` in {hook}. A project cannot set \
                      the declarer of its own hook. Remove `{key}` from that hook."
                 ),
+                SpecKeyProblem::OldNameAlsoSet { new } => write!(
+                    f,
+                    "{layer} sets both `{new}` and `{key}`. `{key}` is the old \
+                     name for `{new}`. Move its rows into `{new}`."
+                ),
             },
             Error::LegacyTable { path, legacy } => {
                 match path {
@@ -436,6 +451,17 @@ impl fmt::Display for Error {
                 "{layer} sets the variable `{name}` twice, to different values. \
                  Remove one of the two settings."
             ),
+            Error::BothAttachmentKeys { path, table } => {
+                let file = path
+                    .as_deref()
+                    .map_or_else(|| "minimal.toml".to_owned(), |p| p.display().to_string());
+                write!(
+                    f,
+                    "`{table}` in {file} sets both `attachments` and `patches`. \
+                     `patches` is the old name for `attachments`. Move its rows \
+                     into `attachments`."
+                )
+            }
         }
     }
 }
@@ -467,6 +493,7 @@ impl std::error::Error for Error {
             Error::BoxType(_) => None,
             Error::LoadoutVarConflict { .. } => None,
             Error::DuplicateVar { .. } => None,
+            Error::BothAttachmentKeys { .. } => None,
         }
     }
 }

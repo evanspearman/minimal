@@ -1733,7 +1733,7 @@ impl SelectedLoadouts {
     fn layers(&self) -> anyhow::Result<Vec<(String, toml::Table)>> {
         const APPLIED: [&str; 5] = [
             "packages",
-            "patches",
+            boxes::core::primitives::ATTACHMENTS_KEY,
             "vars",
             "vars_lenient",
             "lifecycle_hooks",
@@ -1858,7 +1858,7 @@ pub(crate) fn task_box_entry(
 ///
 /// A list the spec has no key for stays `None`. A task entry sends only
 /// `packages` and `lifecycle_hooks`. It sends no `vars`, `vars_lenient` or
-/// `patches`. `min task run` reads only the `[tasks.<name>]` table, so those
+/// `attachments`. `min task run` reads only the `[tasks.<name>]` table, so those
 /// keys from `[defaults]` and `[defaults.task]` do not reach a task box.
 /// gominimal/minimal#3266 tracks that gap. With hooks off (`--no-hooks`), no
 /// `lifecycle_hooks` list is sent.
@@ -1982,13 +1982,14 @@ fn box_entry(
             .transpose()
             .map_err(format_error)?;
     }
-    // A task entry sends no `vars`, `vars_lenient` or `patches`, so the
+    // A task entry sends no `vars`, `vars_lenient` or `attachments`, so the
     // `[defaults]` and `[defaults.task]` values for them do not reach the
     // task box. gominimal/minimal#3266 tracks that gap.
     if box_type != boxes::TASK_BOX_TYPE {
         wire.vars = list(spec, "vars").map_err(format_error)?;
         wire.vars_lenient = list(spec, "vars_lenient").map_err(format_error)?;
-        wire.patches = list(spec, "patches").map_err(format_error)?;
+        wire.patches =
+            list(spec, boxes::core::primitives::ATTACHMENTS_KEY).map_err(format_error)?;
     }
     tracing::info!(
         entry = %wire.name,

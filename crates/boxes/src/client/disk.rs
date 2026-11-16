@@ -100,6 +100,14 @@ pub enum LoadError {
         #[source]
         source: toml::de::Error,
     },
+    /// The file sets both `attachments` and its old name `patches`.
+    /// Refused rather than merged, so the file keeps one list to edit.
+    #[error(
+        "loadout `{name}` sets both `attachments` and `patches`. `patches` is the old \
+         name for `attachments`. Move its rows into `attachments` in {}.",
+        path.display()
+    )]
+    BothAttachmentKeys { name: String, path: PathBuf },
     /// The name taken from the filesystem — the filename stem under
     /// [`Layout::Flat`], the directory name under
     /// [`Layout::Directory`] — isn't a valid loadout name (e.g.
@@ -256,9 +264,22 @@ fn parse_named(path: &Path, name: &LoadoutName) -> Result<Loadout, LoadError> {
         path: path.to_path_buf(),
         source,
     })?;
-    let file: LoadoutFile = toml::from_str(&contents).map_err(|source| LoadError::Parse {
-        path: path.to_path_buf(),
-        source,
+    let file: LoadoutFile = toml::from_str(&contents).map_err(|source| {
+        // `patches` is an alias of `attachments`, so serde reports a file
+        // that sets both as a duplicate of the new name.
+        if source
+            .message()
+            .contains(crate::core::primitives::DUPLICATE_ATTACHMENTS)
+        {
+            return LoadError::BothAttachmentKeys {
+                name: name.to_string(),
+                path: path.to_path_buf(),
+            };
+        }
+        LoadError::Parse {
+            path: path.to_path_buf(),
+            source,
+        }
     })?;
 
     match DeclaredName::classify(file.declared_name(), name) {
@@ -600,6 +621,46 @@ mod tests {
         let path = write_file(dir.path(), "bad.toml", "= not = toml =");
         let err = read_loadout_file(&path).expect_err("malformed toml should error");
         assert!(matches!(err, LoadError::Parse { .. }));
+    }
+
+    /// A loadout written before the rename, with `patches`, loads its
+    /// rows as attachments.
+    #[test]
+    fn read_loadout_file_reads_the_old_attachments_key() {
+        let dir = TempDir::new().unwrap();
+        let path = write_file(
+            dir.path(),
+            "dev.toml",
+            "patches = [{ dest = \"a\", source = \"~/a\" }]\n",
+        );
+        let loadout = read_loadout_file(&path).expect("the old key still reads");
+        assert_eq!(loadout.patches().len(), 1);
+    }
+
+    /// A loadout that sets both `attachments` and `patches` is refused
+    /// with a message that names both keys and the file.
+    #[test]
+    fn read_loadout_file_refuses_both_attachments_keys() {
+        let dir = TempDir::new().unwrap();
+        let path = write_file(
+            dir.path(),
+            "dev.toml",
+            "attachments = [{ dest = \"a\", source = \"~/a\" }]\n\
+             patches = [{ dest = \"b\", source = \"~/b\" }]\n",
+        );
+        let err = read_loadout_file(&path).expect_err("both keys are refused");
+        assert!(
+            matches!(err, LoadError::BothAttachmentKeys { .. }),
+            "{err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "loadout `dev` sets both `attachments` and `patches`. `patches` is the old \
+                 name for `attachments`. Move its rows into `attachments` in {}.",
+                path.display()
+            ),
+        );
     }
 
     /// `list_loadouts` enumerates both layouts in name order, ignores

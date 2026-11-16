@@ -39,6 +39,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use boxes::core::primitives::{ATTACHMENTS_KEY, OLD_ATTACHMENTS_KEY};
+
 use crate::Error;
 use crate::box_types::{
     BoxTypeError, BoxTypes, ResolvedType, allowed_words, canonical_constraints, excluded, inline,
@@ -412,6 +414,7 @@ pub fn expand(entry: &BoxEntry, layers: &Layers) -> Result<Expansion, Error> {
     }
     ordered.push((Origin::of(Layer::Overrides), &layers.overrides));
     check_project_declarers(entry, &ordered)?;
+    refuse_both_attachment_keys(entry, &ordered)?;
     let mut expansion = fold(&ordered);
     merge_vars(entry, &ordered, &layers.host_vars, &mut expansion)?;
     // BOX-071: the store references carry the client's authorities, so
@@ -773,6 +776,13 @@ fn fold(ordered: &[(Origin, &toml::Table)]) -> Expansion {
                 merge_value(&mut spec, &mut report, key, &declared, origin);
                 continue;
             }
+            // A list under the old key is the same attachments as one under
+            // the new key, so layers that use either merge as one list.
+            // [`refuse_both_attachment_keys`] refused a layer that sets both.
+            if key == OLD_ATTACHMENTS_KEY && value.is_array() {
+                merge_value(&mut spec, &mut report, ATTACHMENTS_KEY, value, origin);
+                continue;
+            }
             merge_value(&mut spec, &mut report, key, value, origin);
         }
     }
@@ -814,6 +824,31 @@ fn declared_hooks(value: &toml::Value, origin: &Origin) -> toml::Value {
         })
         .collect();
     toml::Value::Array(items)
+}
+
+/// Refuses a layer that sets both `attachments` and a list under its old
+/// name `patches`. The fold would merge the two, so the layer would keep two
+/// lists for one setting. Exits 3.
+fn refuse_both_attachment_keys(
+    entry: &BoxEntry,
+    ordered: &[(Origin, &toml::Table)],
+) -> Result<(), Error> {
+    let both = ordered.iter().find(|(_, layer)| {
+        layer.contains_key(ATTACHMENTS_KEY)
+            && layer
+                .get(OLD_ATTACHMENTS_KEY)
+                .is_some_and(toml::Value::is_array)
+    });
+    match both {
+        Some((origin, _)) => Err(Error::InvalidSpecKey {
+            key: OLD_ATTACHMENTS_KEY.to_owned(),
+            layer: layer_words(entry, Some(origin)),
+            problem: SpecKeyProblem::OldNameAlsoSet {
+                new: ATTACHMENTS_KEY,
+            },
+        }),
+        None => Ok(()),
+    }
 }
 
 /// Refuses a `declared_by` key that a project layer writes in one of its
@@ -1233,7 +1268,6 @@ enum Shape {
     StrOrStrList,
     Table,
     List,
-    TableOrList,
 }
 
 impl Shape {
@@ -1247,7 +1281,6 @@ impl Shape {
             Shape::StrOrStrList => "a string or a list of strings",
             Shape::Table => "a table",
             Shape::List => "a list",
-            Shape::TableOrList => "a table or a list",
         }
     }
 
@@ -1262,8 +1295,8 @@ impl Shape {
             (Shape::Str, toml::Value::String(_))
             | (Shape::Bool, toml::Value::Boolean(_))
             | (Shape::StrOrStrList, toml::Value::String(_))
-            | (Shape::Table | Shape::TableOrList, toml::Value::Table(_))
-            | (Shape::List | Shape::TableOrList, toml::Value::Array(_)) => true,
+            | (Shape::Table, toml::Value::Table(_))
+            | (Shape::List, toml::Value::Array(_)) => true,
             (Shape::StrList | Shape::StrOrStrList, toml::Value::Array(items)) => {
                 if !all_strings(items) {
                     return Some("a list with an item that is not a string");
@@ -1304,6 +1337,7 @@ pub(crate) const fn value_words(value: &toml::Value) -> &'static str {
 ///   marks an implicit `default` entry (BOX-161 with BOX-165).
 const SPEC_KEYS: &[(&str, Shape)] = &[
     ("args", Shape::Table),
+    ("attachments", Shape::List),
     ("bash", Shape::Str),
     ("box", Shape::Table),
     ("cmdcmd", Shape::StrList),
@@ -1335,7 +1369,9 @@ const SPEC_KEYS: &[(&str, Shape)] = &[
     ("packages", Shape::StrList),
     ("params", Shape::Table),
     ("patch", Shape::Table),
-    ("patches", Shape::TableOrList),
+    // A task's alias of `patch`. A list under this key is the old name of
+    // `attachments`, which the fold moves to the new key.
+    ("patches", Shape::Table),
     ("profile", Shape::Str),
     ("pty_enabled", Shape::Bool),
     ("restart", Shape::Str),
@@ -2908,7 +2944,7 @@ mod tests {
     fn whole_loadout() -> toml::Table {
         table(
             "packages = [\"zellij\"]\n\
-             patches = { \"~/.bashrc\" = \"alias l=ls\" }\n\
+             attachments = [{ dest = \"~/.bashrc\", source = \"~/.bashrc\" }]\n\
              vars = { EDITOR = \"hx\" }\n\
              vars_lenient = [{ name = \"my.var\", value = \"1\" }]\n\
              lifecycle_hooks = [{ on = \"start\", run = \"echo hi\" }]\n",
@@ -2918,7 +2954,7 @@ mod tests {
     /// The keys of [`whole_loadout`].
     const LOADOUT_KEYS: [&str; 5] = [
         "packages",
-        "patches",
+        "attachments",
         "vars",
         "vars_lenient",
         "lifecycle_hooks",
@@ -4125,5 +4161,57 @@ mod tests {
             };
             prop_assert_eq!(run(HostFacts::Unenrolled), run(HostFacts::Enrolled));
         }
+    }
+
+    /// A list under the old key `patches`, in any layer, is the same
+    /// attachments as one under `attachments`: the layers merge into the
+    /// one key, and the spec carries no `patches`.
+    #[test]
+    fn old_attachments_key_merges_into_attachments() {
+        let file = "[defaults]\npatches = [{ dest = \"a\", source = \"a\" }]\n\n\
+                    [sessions.dev]\nloadout_mode = \"open\"\n\
+                    attachments = [{ dest = \"b\", source = \"b\" }]\n";
+        let loadout = table("patches = [{ dest = \"c\", source = \"c\" }]\n");
+        let e = expand_typed_with(file, "dev", loadout)
+            .expect("the types resolve")
+            .expect("expands");
+        let dests: Vec<&str> = e.spec["attachments"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .filter_map(|row| row.get("dest").and_then(toml::Value::as_str))
+            .collect();
+        assert_eq!(dests, ["a", "b", "c"]);
+        assert!(!e.spec.contains_key("patches"), "{:?}", e.spec);
+    }
+
+    /// A table-valued `patches` is a task's alias of `patch`, not an old
+    /// `attachments`: it stays under its own key.
+    #[test]
+    fn table_valued_patches_is_not_renamed() {
+        let file = "[tasks.lint]\npatches = { dir = { \"~/x\" = \"ro\" } }\n";
+        let e = expand_typed_with(file, "lint", toml::Table::new())
+            .expect("the types resolve")
+            .expect("expands");
+        assert!(e.spec.contains_key("patches"), "{:?}", e.spec);
+        assert!(!e.spec.contains_key("attachments"), "{:?}", e.spec);
+    }
+
+    /// A layer that sets both `attachments` and `patches` is refused, and
+    /// the message names both keys and the layer.
+    #[test]
+    fn layer_with_both_attachments_keys_is_refused() {
+        let file = "[sessions.dev]\n\
+                    attachments = [{ dest = \"a\", source = \"a\" }]\n\
+                    patches = [{ dest = \"b\", source = \"b\" }]\n";
+        let err = expand_typed_with(file, "dev", toml::Table::new())
+            .expect("the types resolve")
+            .expect_err("both keys are refused");
+        assert_eq!(
+            err.to_string(),
+            "`[sessions.dev]` in minimal.toml sets both `attachments` and `patches`. \
+             `patches` is the old name for `attachments`. Move its rows into `attachments`."
+        );
+        assert_eq!(err.exit_code(), Some(3));
     }
 }
